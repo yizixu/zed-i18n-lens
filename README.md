@@ -163,22 +163,27 @@ If inline translations do not appear, check whether inlay hints are enabled in Z
 The version is single-sourced from `Cargo.toml` (`CARGO_PKG_VERSION`) and must
 match `extension.toml` and `package.json`. To cut a release:
 
-1. Bump `version` in `Cargo.toml`, `extension.toml`, and `package.json`.
-2. Build the bundle:
+1. Bump `version` in `Cargo.toml`, `extension.toml`, and `package.json` (they
+   must all match — the release workflow enforces this).
+2. Tag and push:
 
    ```bash
-   npm run build:server
+   git tag v<version>   # e.g. v0.4.0
+   git push origin v<version>
    ```
 
-3. Create a GitHub release tagged `v<version>` (e.g. `v0.4.0`) and upload
-   `server/dist/i18n-lens-server.cjs` as a release asset named exactly
-   `i18n-lens-server.cjs`. The extension downloads it from:
+   The `.github/workflows/release.yml` workflow then builds the bundle and
+   publishes a GitHub release with `i18n-lens-server.cjs` attached. The
+   extension downloads it at runtime from:
 
    ```text
    https://github.com/yizixu/zed-i18n-lens/releases/download/v<version>/i18n-lens-server.cjs
    ```
 
-4. Submit/update the extension in `zed-industries/extensions` (bump the
+   To do it manually instead: `npm run build:server`, then create the release
+   and upload `server/dist/i18n-lens-server.cjs` (asset name must stay
+   `i18n-lens-server.cjs`).
+3. Submit/update the extension in `zed-industries/extensions` (bump the
    `version` in its `extensions.toml` to match).
 
 If the release asset for the current version is missing, the language server
