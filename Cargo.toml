@@ -1,0 +1,12 @@
+[package]
+name = "zed-i18n-lens"
+version = "0.4.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.7.0"
