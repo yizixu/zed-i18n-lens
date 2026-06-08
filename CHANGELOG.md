@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows semantic versioning while it is developed locally.
 
+## [0.5.0] - 2026-06-07
+
+### Added
+
+- Added monorepo package contexts through `.i18nlensrc.json` `packages` entries.
+- Added longest-prefix package root selection so files in `apps/web` and `packages/*` use their own locale directories and default locales.
+- Added tests for monorepo config normalization and package context resolution.
+
+### Changed
+
+- Bumped extension/package/Cargo version from `0.4.0` to `0.5.0`.
+- Locale discovery is now context-aware: package `localeDirs` are resolved relative to the selected package root instead of always using the workspace root.
+
 ## [0.4.0] - 2026-06-06
 
 ### Added

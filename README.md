@@ -55,7 +55,19 @@ You can add `.i18nlensrc.json` to your project root to override the defaults:
   "inlayHints": {
     "enabled": true,
     "maxLength": 24
-  }
+  },
+  "packages": [
+    {
+      "root": "apps/web",
+      "defaultLocale": "zh-CN",
+      "localeDirs": ["src/locales"]
+    },
+    {
+      "root": "packages/admin",
+      "defaultLocale": "en-US",
+      "localeDirs": ["src/i18n"]
+    }
+  ]
 }
 ```
 
@@ -73,6 +85,7 @@ Supported options:
 | `localeDirs` | string[] | `src/locales`, `src/i18n`, `locales`, `i18n` | Workspace-relative directories to scan for locale files. |
 | `inlayHints.enabled` | boolean | `true` | Enables or disables inline translation hints from this language server. |
 | `inlayHints.maxLength` | number | `24` | Maximum inline hint label length before truncation. |
+| `packages` | array | `[]` | Optional monorepo package contexts. Each item needs a workspace-relative `root` and can override `defaultLocale`, `localeDirs`, and `inlayHints`. The language server picks the longest package root matching the currently edited file. |
 
 Invalid or missing config values fall back to defaults. If `.i18nlensrc.json` contains invalid JSON, the language server logs a warning and continues with default config.
 
@@ -80,7 +93,7 @@ Configuration changes are watched automatically. After saving `.i18nlensrc.json`
 
 ## Locale discovery
 
-The language server currently reads JSON files from:
+In a single-project workspace, `localeDirs` are resolved relative to the workspace root. The language server currently reads JSON files from:
 
 - `src/locales/*.json`
 - `src/i18n/*.json`
@@ -97,6 +110,29 @@ src/locales/en-US/common.json
 ```
 
 A file named `common.json` contributes keys with the `common.` prefix. A file named `index.json` contributes keys without an `index.` prefix.
+
+## Monorepo workspaces
+
+For pnpm/turborepo and other monorepos, put `.i18nlensrc.json` at the workspace root and add `packages` entries:
+
+```json
+{
+  "defaultLocale": "zh-CN",
+  "packages": [
+    {
+      "root": "apps/web",
+      "localeDirs": ["src/locales"]
+    },
+    {
+      "root": "packages/admin",
+      "defaultLocale": "en-US",
+      "localeDirs": ["src/i18n"]
+    }
+  ]
+}
+```
+
+When a document is opened, I18n Lens selects the package whose `root` is the longest path prefix of that document. `localeDirs` inside a package are resolved relative to that package root, so `apps/web/src/locales` and `packages/admin/src/i18n` are indexed independently. Package entries inherit root-level `defaultLocale`, `localeDirs`, and `inlayHints` unless they override them.
 
 ## Local development
 

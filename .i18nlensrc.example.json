@@ -4,5 +4,17 @@
   "inlayHints": {
     "enabled": true,
     "maxLength": 24
-  }
+  },
+  "packages": [
+    {
+      "root": "apps/web",
+      "defaultLocale": "zh-CN",
+      "localeDirs": ["src/locales"]
+    },
+    {
+      "root": "packages/admin",
+      "defaultLocale": "en-US",
+      "localeDirs": ["src/i18n"]
+    }
+  ]
 }

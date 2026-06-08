@@ -2,28 +2,87 @@ export const DEFAULT_CONFIG = Object.freeze({
   defaultLocale: 'zh-CN',
   localeDirs: Object.freeze(['src/locales', 'src/i18n', 'locales', 'i18n']),
   inlayHints: Object.freeze({ enabled: true, maxLength: 24 }),
+  packages: Object.freeze([]),
 });
 
 export function normalizeI18nLensConfig(raw = {}) {
-  const defaultLocale = typeof raw.defaultLocale === 'string' && raw.defaultLocale.trim()
-    ? raw.defaultLocale.trim()
-    : DEFAULT_CONFIG.defaultLocale;
-
-  const localeDirs = Array.isArray(raw.localeDirs)
-    ? raw.localeDirs.filter((dir) => typeof dir === 'string' && dir.trim()).map((dir) => dir.trim())
+  const base = normalizeProjectConfig(raw, DEFAULT_CONFIG);
+  const packages = Array.isArray(raw.packages)
+    ? raw.packages
+      .map((pkg) => normalizePackageConfig(pkg, base))
+      .filter(Boolean)
     : [];
 
+  return { ...base, packages };
+}
+
+function normalizeProjectConfig(raw = {}, defaults = DEFAULT_CONFIG) {
+  const defaultLocale = typeof raw.defaultLocale === 'string' && raw.defaultLocale.trim()
+    ? raw.defaultLocale.trim()
+    : defaults.defaultLocale;
+
+  const localeDirs = Array.isArray(raw.localeDirs)
+    ? raw.localeDirs.filter((dir) => typeof dir === 'string' && dir.trim()).map((dir) => normalizeRelativePath(dir.trim()))
+    : [];
+
+  const defaultInlayHints = defaults.inlayHints || DEFAULT_CONFIG.inlayHints;
   const rawInlayHints = raw.inlayHints && typeof raw.inlayHints === 'object' ? raw.inlayHints : {};
-  const enabled = typeof rawInlayHints.enabled === 'boolean' ? rawInlayHints.enabled : DEFAULT_CONFIG.inlayHints.enabled;
+  const enabled = typeof rawInlayHints.enabled === 'boolean' ? rawInlayHints.enabled : defaultInlayHints.enabled;
   const maxLength = Number.isInteger(rawInlayHints.maxLength) && rawInlayHints.maxLength > 0
     ? rawInlayHints.maxLength
-    : DEFAULT_CONFIG.inlayHints.maxLength;
+    : defaultInlayHints.maxLength;
 
   return {
     defaultLocale,
-    localeDirs: localeDirs.length > 0 ? localeDirs : [...DEFAULT_CONFIG.localeDirs],
+    localeDirs: localeDirs.length > 0 ? localeDirs : [...defaults.localeDirs],
     inlayHints: { enabled, maxLength },
   };
+}
+
+function normalizePackageConfig(raw, inherited) {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const root = typeof raw.root === 'string' && raw.root.trim()
+    ? normalizeRelativePath(raw.root.trim())
+    : undefined;
+  if (!root) return undefined;
+  return { root, ...normalizeProjectConfig(raw, inherited) };
+}
+
+function normalizeRelativePath(value) {
+  return value.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/g, '');
+}
+
+export function resolveProjectContext(filePath, workspaceRoot, config) {
+  const normalizedWorkspaceRoot = normalizeFsPath(workspaceRoot);
+  const normalizedFilePath = normalizeFsPath(filePath);
+  const candidates = [
+    { root: normalizedWorkspaceRoot, config: withoutPackages(config) },
+    ...((config?.packages || []).map((pkg) => ({
+      root: normalizeFsPath(joinFsPath(normalizedWorkspaceRoot, pkg.root)),
+      config: withoutPackages(pkg),
+    }))),
+  ];
+
+  return candidates
+    .filter((candidate) => isPathInside(normalizedFilePath, candidate.root))
+    .sort((a, b) => b.root.length - a.root.length)[0] || candidates[0];
+}
+
+function withoutPackages(config) {
+  const { packages: _packages, ...rest } = config || normalizeI18nLensConfig();
+  return rest;
+}
+
+function normalizeFsPath(value) {
+  return String(value || '').replace(/\\/g, '/').replace(/\/+$/g, '');
+}
+
+function joinFsPath(root, relative) {
+  return root + '/' + normalizeRelativePath(relative || '');
+}
+
+function isPathInside(filePath, root) {
+  return filePath === root || filePath.startsWith(root + '/');
 }
 
 

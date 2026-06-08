@@ -14,6 +14,7 @@ import {
   getDefinitionLocaleOrder,
   collectLocaleWatchPaths,
   findJsonKeyLocation,
+  resolveProjectContext,
 } from '../server/core.js';
 
 test('flattenLocale flattens nested locale objects', () => {
@@ -193,6 +194,7 @@ test('normalizeI18nLensConfig returns defaults when config is empty', () => {
     defaultLocale: 'zh-CN',
     localeDirs: ['src/locales', 'src/i18n', 'locales', 'i18n'],
     inlayHints: { enabled: true, maxLength: 24 },
+    packages: [],
   });
 });
 
@@ -205,6 +207,7 @@ test('normalizeI18nLensConfig accepts project overrides', () => {
     defaultLocale: 'en-US',
     localeDirs: ['app/lang'],
     inlayHints: { enabled: false, maxLength: 12 },
+    packages: [],
   });
 });
 
@@ -217,6 +220,7 @@ test('normalizeI18nLensConfig ignores invalid values safely', () => {
     defaultLocale: 'zh-CN',
     localeDirs: ['src/locales', 'src/i18n', 'locales', 'i18n'],
     inlayHints: { enabled: true, maxLength: 24 },
+    packages: [],
   });
 });
 
@@ -251,4 +255,50 @@ test('didWatchedFileChange detects mtime changes and ignores unchanged files', (
 test('didWatchedFileChange detects file creation and deletion', () => {
   assert.equal(didWatchedFileChange({ mtimeMs: 0 }, { mtimeMs: 11 }), true);
   assert.equal(didWatchedFileChange({ mtimeMs: 11 }, { mtimeMs: 0 }), true);
+});
+
+
+test('normalizeI18nLensConfig accepts monorepo package overrides and inherits defaults', () => {
+  assert.deepEqual(normalizeI18nLensConfig({
+    defaultLocale: 'en-US',
+    localeDirs: ['shared/locales'],
+    inlayHints: { enabled: true, maxLength: 18 },
+    packages: [
+      { root: 'apps/web', defaultLocale: 'zh-CN', localeDirs: ['src/locales'] },
+      { root: './packages/admin', inlayHints: { enabled: false } },
+      { localeDirs: ['ignored'] },
+    ],
+  }), {
+    defaultLocale: 'en-US',
+    localeDirs: ['shared/locales'],
+    inlayHints: { enabled: true, maxLength: 18 },
+    packages: [
+      { root: 'apps/web', defaultLocale: 'zh-CN', localeDirs: ['src/locales'], inlayHints: { enabled: true, maxLength: 18 } },
+      { root: 'packages/admin', defaultLocale: 'en-US', localeDirs: ['shared/locales'], inlayHints: { enabled: false, maxLength: 18 } },
+    ],
+  });
+});
+
+test('resolveProjectContext selects the longest matching monorepo package root', () => {
+  const config = normalizeI18nLensConfig({
+    defaultLocale: 'en-US',
+    localeDirs: ['root-locales'],
+    packages: [
+      { root: 'apps/web', defaultLocale: 'zh-CN', localeDirs: ['src/locales'] },
+      { root: 'apps/web-admin', defaultLocale: 'ja-JP', localeDirs: ['src/lang'] },
+    ],
+  });
+
+  const web = resolveProjectContext('F:/code/repo/apps/web/src/App.vue', 'F:/code/repo', config);
+  assert.equal(web.root, 'F:/code/repo/apps/web');
+  assert.equal(web.config.defaultLocale, 'zh-CN');
+  assert.deepEqual(web.config.localeDirs, ['src/locales']);
+
+  const admin = resolveProjectContext('F:/code/repo/apps/web-admin/src/App.vue', 'F:/code/repo', config);
+  assert.equal(admin.root, 'F:/code/repo/apps/web-admin');
+  assert.equal(admin.config.defaultLocale, 'ja-JP');
+
+  const root = resolveProjectContext('F:/code/repo/tools/script.ts', 'F:/code/repo', config);
+  assert.equal(root.root, 'F:/code/repo');
+  assert.equal(root.config.defaultLocale, 'en-US');
 });
