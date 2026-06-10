@@ -11,16 +11,14 @@ import {
   getCompletions,
   getCompletionPrefix,
   keyAtPosition,
-  findJsonKeyLocation,
   parseTsLocaleModule,
-  findLocaleKeyLocation,
+  collectLocaleKeyTargets,
   getInlayHints,
   normalizeI18nLensConfig,
   resolveConfigPath,
   CONFIG_RELATIVE_PATH,
   didWatchedFileChange,
   collectLocaleWatchPaths,
-  getDefinitionLocaleOrder,
   resolveProjectContext,
 } from './core.js';
 
@@ -67,7 +65,10 @@ connection.onHover((params) => {
   if (!item) return null;
   const context = getProjectContext(params.textDocument.uri);
   const { locales } = loadLocalesForContext(context);
-  return { contents: { kind: MarkupKind.Markdown, value: buildHoverMarkdown(item.key, locales) }, range: item.range };
+  return {
+    contents: { kind: MarkupKind.Markdown, value: buildHoverMarkdown(item.key, locales) },
+    range: item.range,
+  };
 });
 
 connection.onCompletion((params) => {
@@ -93,17 +94,13 @@ connection.onDefinition((params) => {
   if (!item) return null;
   const context = getProjectContext(params.textDocument.uri);
   const { locales, localeTexts } = loadLocalesForContext(context);
-  for (const locale of getDefinitionLocaleOrder(locales, context.config.defaultLocale)) {
-    if (!Object.prototype.hasOwnProperty.call(locale.flat, item.key)) continue;
-    for (const filePath of locale.files || [locale.path]) {
-      const text = localeTexts[filePath];
-      if (!text) continue;
-      const pos = filePath.endsWith('.json') ? findJsonKeyLocation(text, item.key) : findLocaleKeyLocation(text, item.key);
-      if (!pos) continue;
-      return { uri: pathToFileURL(filePath).toString(), range: { start: pos, end: { line: pos.line, character: pos.character + item.key.split('.').at(-1).length + 2 } } };
-    }
-  }
-  return null;
+  const keyTokenLength = item.key.split('.').at(-1).length + 2;
+  const locations = collectLocaleKeyTargets(locales, item.key, localeTexts, context.config.defaultLocale)
+    .map(({ filePath, position }) => ({
+      uri: pathToFileURL(filePath).toString(),
+      range: { start: position, end: { line: position.line, character: position.character + keyTokenLength } },
+    }));
+  return locations.length ? locations : null;
 });
 
 function getProjectContext(uri) {

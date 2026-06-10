@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows semantic versioning while it is developed locally.
 
+## [0.6.0] - 2026-06-10
+
+### Changed
+
+- Go to Definition on an i18n key now returns every locale that defines it (default locale first) instead of only the default locale, so Ctrl/Cmd+click or F12 lets you jump straight to any language's source file. Hover stays a read-only translation table.
+
 ## [0.5.1] - 2026-06-10
 
 ### Changed

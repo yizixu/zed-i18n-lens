@@ -163,6 +163,40 @@ export function collectLocaleWatchPaths(localeCache, localeDirs = []) {
   return [...paths].sort();
 }
 
+export function findLocaleKeyTarget(locale, key, localeTexts = {}) {
+  if (!locale || !Object.prototype.hasOwnProperty.call(locale.flat || {}, key)) return undefined;
+  const files = Array.isArray(locale.files) && locale.files.length
+    ? locale.files
+    : (locale.path ? [locale.path] : []);
+  const candidates = files
+    .map((filePath) => ({ filePath, lookupKey: lookupKeyForLocaleFile(locale, filePath, key) }))
+    .sort((a, b) => Number(a.lookupKey === key) - Number(b.lookupKey === key));
+
+  for (const candidate of candidates) {
+    const text = localeTexts[candidate.filePath];
+    if (!text) continue;
+    const position = /\.json$/i.test(candidate.filePath)
+      ? findJsonKeyLocation(text, candidate.lookupKey)
+      : findLocaleKeyLocation(text, candidate.lookupKey);
+    if (position) return { filePath: candidate.filePath, position };
+  }
+
+  const fallback = candidates[0];
+  return fallback ? { filePath: fallback.filePath } : undefined;
+}
+
+function lookupKeyForLocaleFile(locale, filePath, key) {
+  const isNestedLocaleFile = normalizeFsPath(locale.path) !== normalizeFsPath(filePath);
+  const stem = fileStem(filePath);
+  if (isNestedLocaleFile && stem && stem !== 'index' && key.startsWith(stem + '.')) return key.slice(stem.length + 1);
+  return key;
+}
+
+function fileStem(filePath) {
+  const fileName = String(filePath || '').replace(/\\/g, '/').split('/').at(-1) || '';
+  return fileName.replace(/\.[^.]+$/, '');
+}
+
 export function buildHoverMarkdown(key, locales) {
   const names = Object.keys(locales).sort();
   if (names.length === 0) return '**' + key + '**\n\nNo locale JSON files found.';
@@ -242,6 +276,14 @@ export function getDefinitionLocaleOrder(locales, defaultLocale) {
   const preferred = resolvePreferredLocale(locales, defaultLocale);
   if (!preferred) return localeList;
   return [preferred, ...localeList.filter((locale) => locale !== preferred)];
+}
+
+// Every locale that defines the key, with the default locale first, so
+// Go to Definition can return one LSP Location per language file.
+export function collectLocaleKeyTargets(locales, key, localeTexts = {}, defaultLocale) {
+  return getDefinitionLocaleOrder(locales, defaultLocale)
+    .map((locale) => findLocaleKeyTarget(locale, key, localeTexts))
+    .filter((target) => target?.position);
 }
 
 export function getCompletionPrefix(text, position) {

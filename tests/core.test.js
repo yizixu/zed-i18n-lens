@@ -15,6 +15,8 @@ import {
   getDefinitionLocaleOrder,
   collectLocaleWatchPaths,
   findJsonKeyLocation,
+  findLocaleKeyTarget,
+  collectLocaleKeyTargets,
   resolveProjectContext,
 } from '../server/core.js';
 
@@ -152,6 +154,40 @@ test('findJsonKeyLocation tolerates whitespace between key and colon', () => {
   const json = '{\n  "order" : {\n    "pay_now" : "立即支付"\n  }\n}\n';
   const loc = findJsonKeyLocation(json, 'order.pay_now');
   assert.deepEqual(loc, { line: 2, character: 4 });
+});
+
+test('findLocaleKeyTarget resolves keys inside prefixed locale directory files', () => {
+  const locale = {
+    path: '/repo/src/locales/zh-CN',
+    flat: { 'common.ok': '确定' },
+    files: ['/repo/src/locales/zh-CN/common.json'],
+  };
+  const localeTexts = {
+    '/repo/src/locales/zh-CN/common.json': '{\n  "ok": "确定"\n}\n',
+  };
+
+  assert.deepEqual(findLocaleKeyTarget(locale, 'common.ok', localeTexts), {
+    filePath: '/repo/src/locales/zh-CN/common.json',
+    position: { line: 1, character: 2 },
+  });
+});
+
+test('collectLocaleKeyTargets returns every locale that defines the key, default locale first', () => {
+  const locales = {
+    'en-US': { path: '/repo/src/locales/en-US.json', flat: { 'common.ok': 'OK' }, files: ['/repo/src/locales/en-US.json'] },
+    'zh-CN': { path: '/repo/src/locales/zh-CN', flat: { 'common.ok': '确定' }, files: ['/repo/src/locales/zh-CN/common.json'] },
+    'ja-JP': { path: '/repo/src/locales/ja-JP.json', flat: {}, files: ['/repo/src/locales/ja-JP.json'] },
+  };
+  const localeTexts = {
+    '/repo/src/locales/en-US.json': '{\n  "common": {\n    "ok": "OK"\n  }\n}\n',
+    '/repo/src/locales/zh-CN/common.json': '{\n  "ok": "确定"\n}\n',
+  };
+
+  const targets = collectLocaleKeyTargets(locales, 'common.ok', localeTexts, 'zh-CN');
+  assert.deepEqual(targets, [
+    { filePath: '/repo/src/locales/zh-CN/common.json', position: { line: 1, character: 2 } },
+    { filePath: '/repo/src/locales/en-US.json', position: { line: 2, character: 4 } },
+  ]);
 });
 
 test('getValueByKey reads nested objects', () => {

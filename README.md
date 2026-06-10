@@ -9,7 +9,7 @@ Zed extension plus Language Server for Vue, TypeScript, TSX, JavaScript and JSX.
 - Hover: show all locale values for a key
 - Diagnostics: report keys missing from every locale file as errors and keys missing from some locales as warnings
 - Completion: suggest existing i18n keys with default locale text
-- Definition: jump from source key to locale JSON definition
+- Definition: jump from a source key to its locale definition; when several locales define the key, pick which language file to open
 
 ## Inline translations
 
@@ -28,6 +28,12 @@ t("order.pay_now")  立即支付
 The inline hint uses `defaultLocale` from `.zed/i18nlensrc.json`, falling back to `zh-CN`. Missing keys are not shown inline because diagnostics already report them.
 
 Long translations are truncated inline to keep the editor readable. Hover still shows the full locale table.
+
+## Hover
+
+Hovering over an i18n key shows every loaded locale value in a read-only table.
+
+To open a specific language file, use Go to Definition (Ctrl/Cmd+click or F12) on the key. When the key exists in more than one locale, the editor offers each language's file — default locale first — so you can jump straight to the one you want instead of only the default locale.
 
 ## Diagnostics
 
@@ -187,6 +193,16 @@ On this Windows setup, if `cargo` is not visible inside Git Bash / WSL, use:
 5. Test hover, completion, diagnostics, definition, and inlay hints.
 
 If inline translations do not appear, check whether inlay hints are enabled in Zed settings.
+
+### Iterating on the language server
+
+After changing `server/*.js`, redeploy the bundle into the local Zed cache and restart the server instead of cutting a release:
+
+```powershell
+./scripts/deploy-local.ps1
+```
+
+It runs `npm run build:server`, overwrites `%LOCALAPPDATA%\Zed\extensions\work\i18n-lens\i18n-lens-server-<version>.cjs` (version single-sourced from `package.json`), then prompts you to run **restart language server** from the Zed command palette.
 
 > Note: a dev extension can run the bundle from a different location because Zed
 > junctions the `installed` entry to this source folder. To exercise the real
