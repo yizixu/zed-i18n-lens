@@ -5,6 +5,12 @@ export const DEFAULT_CONFIG = Object.freeze({
   packages: Object.freeze([]),
 });
 
+export const CONFIG_RELATIVE_PATH = '.zed/i18nlensrc.json';
+
+export function resolveConfigPath(workspaceRoot) {
+  return joinFsPath(normalizeFsPath(workspaceRoot), CONFIG_RELATIVE_PATH);
+}
+
 export function normalizeI18nLensConfig(raw = {}) {
   const base = normalizeProjectConfig(raw, DEFAULT_CONFIG);
   const packages = Array.isArray(raw.packages)

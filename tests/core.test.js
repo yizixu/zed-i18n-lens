@@ -9,6 +9,7 @@ import {
   getCompletions,
   getInlayHints,
   normalizeI18nLensConfig,
+  resolveConfigPath,
   didWatchedFileChange,
   resolvePreferredLocale,
   getDefinitionLocaleOrder,
@@ -16,6 +17,11 @@ import {
   findJsonKeyLocation,
   resolveProjectContext,
 } from '../server/core.js';
+
+test('resolveConfigPath points to the Zed project config file', () => {
+  assert.equal(resolveConfigPath('F:/code/repo'), 'F:/code/repo/.zed/i18nlensrc.json');
+  assert.equal(resolveConfigPath('F:\\code\\repo\\'), 'F:/code/repo/.zed/i18nlensrc.json');
+});
 
 test('flattenLocale flattens nested locale objects', () => {
   assert.deepEqual(flattenLocale({ order: { pay_now: '立即支付' }, common: { ok: '确定' } }), {

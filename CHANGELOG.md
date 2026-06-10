@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows semantic versioning while it is developed locally.
 
+## [0.5.1] - 2026-06-10
+
+### Changed
+
+- Moved project config from `.i18nlensrc.json` to `.zed/i18nlensrc.json` because the extension has not been merged upstream yet and does not need legacy path compatibility.
+- Moved the example config template to `.zed/i18nlensrc.example.json`.
+- Bumped extension/package/Cargo version from `0.5.0` to `0.5.1`.
+
 ## [0.5.0] - 2026-06-07
 
 ### Added

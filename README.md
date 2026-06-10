@@ -25,7 +25,7 @@ will show the default locale translation inline after the key string, for exampl
 t("order.pay_now")  立即支付
 ```
 
-The inline hint uses `defaultLocale` from `.i18nlensrc.json`, falling back to `zh-CN`. Missing keys are not shown inline because diagnostics already report them.
+The inline hint uses `defaultLocale` from `.zed/i18nlensrc.json`, falling back to `zh-CN`. Missing keys are not shown inline because diagnostics already report them.
 
 Long translations are truncated inline to keep the editor readable. Hover still shows the full locale table.
 
@@ -46,7 +46,7 @@ Missing i18n key "order.pay_now" in locales: en-US
 
 ## Project configuration
 
-You can add `.i18nlensrc.json` to your project root to override the defaults:
+You can add `.zed/i18nlensrc.json` under your project root to override the defaults:
 
 ```json
 {
@@ -74,7 +74,7 @@ You can add `.i18nlensrc.json` to your project root to override the defaults:
 A template is available in this repository:
 
 ```text
-.i18nlensrc.example.json
+.zed/i18nlensrc.example.json
 ```
 
 Supported options:
@@ -87,9 +87,9 @@ Supported options:
 | `inlayHints.maxLength` | number | `24` | Maximum inline hint label length before truncation. |
 | `packages` | array | `[]` | Optional monorepo package contexts. Each item needs a workspace-relative `root` and can override `defaultLocale`, `localeDirs`, and `inlayHints`. The language server picks the longest package root matching the currently edited file. |
 
-Invalid or missing config values fall back to defaults. If `.i18nlensrc.json` contains invalid JSON, the language server logs a warning and continues with default config.
+Invalid or missing config values fall back to defaults. If `.zed/i18nlensrc.json` contains invalid JSON, the language server logs a warning and continues with default config.
 
-Configuration changes are watched automatically. After saving `.i18nlensrc.json`, the language server reloads config, rebuilds the locale cache, refreshes diagnostics, and asks the editor to refresh inlay hints. You should not need to rebuild or reload the Zed extension just to apply config changes.
+Configuration changes are watched automatically. After saving `.zed/i18nlensrc.json`, the language server reloads config, rebuilds the locale cache, refreshes diagnostics, and asks the editor to refresh inlay hints. You should not need to rebuild or reload the Zed extension just to apply config changes.
 
 ## Locale discovery
 
@@ -113,7 +113,7 @@ A file named `common.json` contributes keys with the `common.` prefix. A file na
 
 ## Monorepo workspaces
 
-For pnpm/turborepo and other monorepos, put `.i18nlensrc.json` at the workspace root and add `packages` entries:
+For pnpm/turborepo and other monorepos, put `.zed/i18nlensrc.json` under the workspace root and add `packages` entries:
 
 ```json
 {

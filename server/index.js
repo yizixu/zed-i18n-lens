@@ -16,6 +16,8 @@ import {
   findLocaleKeyLocation,
   getInlayHints,
   normalizeI18nLensConfig,
+  resolveConfigPath,
+  CONFIG_RELATIVE_PATH,
   didWatchedFileChange,
   collectLocaleWatchPaths,
   getDefinitionLocaleOrder,
@@ -31,7 +33,6 @@ const watchedLocalePaths = new Set();
 let reloadTimer;
 let configMtimeMs;
 let localeCacheByContext = new Map();
-const configFileName = '.i18nlensrc.json';
 const configWatchIntervalMs = 1000;
 const localeWatchIntervalMs = 1000;
 const reloadDebounceMs = 100;
@@ -112,7 +113,7 @@ function getProjectContext(uri) {
 }
 
 function watchConfigFile() {
-  const configPath = path.join(workspaceRoot, configFileName);
+  const configPath = resolveConfigPath(workspaceRoot);
   if (watchedConfigPath === configPath) return;
   if (watchedConfigPath) fs.unwatchFile(watchedConfigPath);
   watchedConfigPath = configPath;
@@ -171,7 +172,7 @@ function refreshInlayHints() {
 }
 
 function loadConfigIfChanged() {
-  const configPath = path.join(workspaceRoot, configFileName);
+  const configPath = resolveConfigPath(workspaceRoot);
   const nextMtimeMs = fs.existsSync(configPath) ? fs.statSync(configPath).mtimeMs : 0;
   if (configMtimeMs === nextMtimeMs) return;
   loadConfig();
@@ -179,7 +180,7 @@ function loadConfigIfChanged() {
 }
 
 function loadConfig() {
-  const configPath = path.join(workspaceRoot, configFileName);
+  const configPath = resolveConfigPath(workspaceRoot);
   configMtimeMs = fs.existsSync(configPath) ? fs.statSync(configPath).mtimeMs : 0;
   if (!configMtimeMs) {
     config = normalizeI18nLensConfig();
@@ -188,7 +189,7 @@ function loadConfig() {
   try {
     config = normalizeI18nLensConfig(JSON.parse(fs.readFileSync(configPath, 'utf8')));
   } catch (error) {
-    connection.console.warn('Failed to load .i18nlensrc.json: ' + error.message);
+    connection.console.warn('Failed to load ' + CONFIG_RELATIVE_PATH + ': ' + error.message);
     config = normalizeI18nLensConfig();
   }
 }
