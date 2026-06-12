@@ -5,7 +5,7 @@ Zed extension plus Language Server for Vue, TypeScript, TSX, JavaScript and JSX.
 ## Features
 
 - Inline translation display via LSP inlay hints
-- Detect `$t("key")`, `t("key")`, `i18n.t("key")`, `v-t="'key'"`, and `v-t="{ path: 'key' }"`
+- Detect `$t`/`t`/`tc`/`$tc`/`i18n.t` calls, `v-t="'key'"`, `v-t="{ path: 'key' }"`, `<i18n-t keypath="key">` (Vue I18n), `<Trans i18nKey="key">` (react-i18next), and `formatMessage({ id: "key" })` (react-intl)
 - Hover: show all locale values for a key
 - Diagnostics: report keys missing from every locale file as errors and keys missing from some locales as warnings
 - Completion: suggest existing i18n keys with default locale text
@@ -188,7 +188,7 @@ On this Windows setup, if `cargo` is not visible inside Git Bash / WSL, use:
 
 1. Open Zed.
 2. Run `Install Dev Extension` from the command palette.
-3. Select this project root: `F:\code\zed-i18n-lens`.
+3. Select this project root, for example the local `zed-i18n-lens` repository directory.
 4. Open a Vue/TS/JS project with locale JSON files.
 5. Test hover, completion, diagnostics, definition, and inlay hints.
 

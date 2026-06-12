@@ -12,23 +12,24 @@
 
 ## 当前状态
 
-当前 MVP 已具备：
+当前已具备（截至 v0.6.0 + Unreleased）：
 
 - Zed Dev Extension 可加载
 - Language Server 可通过 `--stdio` 启动
 - 支持文件：`.vue`、`.ts`、`.tsx`、`.js`、`.jsx`
-- 支持 locale 路径：
-  - `src/locales/*.json`
-  - `src/i18n/*.json`
-  - `locales/*.json`
-  - `i18n/*.json`
+- 识别写法：`$t`/`t`/`tc`/`$tc`/`i18n.t`/`i18n.tc` 调用、`v-t="'key'"`、`v-t="{ path }"`、`<i18n-t keypath>`、react-i18next `<Trans i18nKey>`、react-intl `formatMessage({ id })`
+- 支持 locale 形态：
+  - `src/locales/*.json`、`src/i18n/*.json`、`locales/*.json`、`i18n/*.json`
+  - 目录式：`src/locales/<locale>/<ns>.json`（按文件名加命名空间前缀）
+  - TypeScript locale module：`<locale>.ts`（`export default {}` / `export const`，不执行用户代码）
 - 支持能力：
   - Inlay Hints 行内显示默认语言翻译
-  - Hover 查看 key 对应多语言翻译
-  - Diagnostics 提示完全不存在的 key
+  - Hover 查看 key 对应多语言翻译（只读表格）
+  - Diagnostics：全缺为 error，部分语言缺失为 warning
   - Completion 补全已有 i18n key
-  - Definition 跳转到 JSON locale 定义
-- 已有自动化测试：`npm test`，当前 19 个测试通过
+  - Definition 跳转到 locale 定义，多语言时返回每个语言的位置供选择
+- 项目配置 `.zed/i18nlensrc.json`（`defaultLocale` / `localeDirs` / `inlayHints`），支持 monorepo `packages` 多上下文
+- 自动化测试：`npm test`，当前 38 个测试通过
 - Zed extension 编译验证：`cargo check --target wasm32-wasip1`
 
 ---
@@ -472,6 +473,8 @@ node server/report.js --root . --format markdown
 
 ### Task 10: 支持更多 i18n 框架写法
 
+**Status:** Partially done（Unreleased）。已覆盖 Vue I18n 复数 `tc`/`$tc`、`<i18n-t keypath>`、react-i18next `<Trans i18nKey>`、react-intl `formatMessage({ id })`，均有测试且不误报 `route(` / `delete(` 这类 lookalike 标识符。仍可扩展：`<FormattedMessage id>`、`$te`/`te`（exists 检查）、把函数名/属性名做成可配置项。
+
 **Objective:** 覆盖常见生态。
 
 **Target Patterns:**
@@ -550,19 +553,22 @@ $t('common.submit')
 已完成：
 
 - `v0.2.0`：Inlay Hints 行内翻译
-- `v0.3.0`：项目配置 `.i18nlensrc.json`
-- README / CHANGELOG 基础文档更新
+- `v0.3.0`：项目配置（现为 `.zed/i18nlensrc.json`）
+- `v0.4.0`：部分语言缺失 warning
+- `v0.5.0`：TypeScript locale module 解析
+- `v0.5.1`：配置路径迁移到 `.zed/`
+- monorepo `packages` 多上下文
+- `v0.6.0`：多语言 Definition 跳转（返回每个语言位置供选择）
+- Unreleased：扩展 i18n 写法识别（`tc`/`$tc`、`<i18n-t>`、`<Trans>`、`formatMessage`）
 
 接下来建议优先做：
 
-1. 目录式 locale 完整测试
-3. TypeScript locale module 增强
-4. Code Action 创建缺失 key
-5. 项目级扫描报告
-6. 更多 i18n 框架写法
-7. 性能优化与缓存
-8. Rename 同步重命名 key
-9. 发布准备
+1. Code Action 创建缺失 key（先做 `insertNestedJsonKey` 纯函数 + 测试地基）
+2. 反向跳转 / Find References：从 locale 文件跳回代码使用处
+3. 继续扩展写法识别（`<FormattedMessage>`、`te`/`$te`、函数名配置化）
+4. 项目级扫描报告（未使用 / 缺失 key）
+5. 性能优化与缓存
+6. Rename 同步重命名 key（高风险，待 Code Action 稳定后）
 
 ---
 

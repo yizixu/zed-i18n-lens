@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows semantic versioning while it is developed locally.
 
+## [Unreleased]
+
+### Added
+
+- Recognize more i18n call sites: Vue I18n plural `tc`/`$tc`, the `<i18n-t keypath="...">` component, react-i18next `<Trans i18nKey="...">`, and react-intl `formatMessage({ id: "..." })`. Hover, inlay hints, diagnostics, completion, and definition all work on these too.
+
 ## [0.6.0] - 2026-06-10
 
 ### Changed

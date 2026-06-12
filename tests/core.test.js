@@ -7,6 +7,7 @@ import {
   buildHoverMarkdown,
   getDiagnostics,
   getCompletions,
+  getCompletionPrefix,
   getInlayHints,
   normalizeI18nLensConfig,
   resolveConfigPath,
@@ -36,6 +37,41 @@ test('extractI18nKeys finds Vue and TS i18n calls with ranges', () => {
   const text = '<button>{{ $t("order.pay_now") }}</button>\nconst x = t(\'common.ok\')\n<div v-t="\'user.name\'"></div>';
   const keys = extractI18nKeys(text).map((x) => x.key);
   assert.deepEqual(keys, ['order.pay_now', 'common.ok', 'user.name']);
+});
+
+test('extractI18nKeys detects Vue i18n plural tc and $tc calls', () => {
+  const keys = extractI18nKeys('tc("cart.items"); $tc("cart.count")').map((x) => x.key);
+  assert.deepEqual(keys, ['cart.items', 'cart.count']);
+});
+
+test('extractI18nKeys detects the <i18n-t keypath> component', () => {
+  const keys = extractI18nKeys('<i18n-t keypath="order.summary" tag="p" />').map((x) => x.key);
+  assert.deepEqual(keys, ['order.summary']);
+});
+
+test('extractI18nKeys detects react-i18next <Trans i18nKey>', () => {
+  const keys = extractI18nKeys('<Trans i18nKey="user.greeting">Hi</Trans>').map((x) => x.key);
+  assert.deepEqual(keys, ['user.greeting']);
+});
+
+test('extractI18nKeys detects react-intl formatMessage id and lands the range on the key', () => {
+  const text = 'intl.formatMessage({ id: "nav.home" }); formatMessage({ defaultMessage: "x", id: "nav.about" })';
+  const items = extractI18nKeys(text);
+  assert.deepEqual(items.map((x) => x.key), ['nav.home', 'nav.about']);
+  assert.equal(text.slice(items[0].startOffset, items[0].endOffset), 'nav.home');
+});
+
+test('extractI18nKeys does not misfire on lookalike identifiers', () => {
+  const text = 'route("home"); delete(x); const note = t("real.key")';
+  const keys = extractI18nKeys(text).map((x) => x.key);
+  assert.deepEqual(keys, ['real.key']);
+});
+
+test('getCompletionPrefix triggers inside the new i18n syntaxes', () => {
+  assert.equal(getCompletionPrefix('$tc("cart.', { line: 0, character: 10 }), 'cart.');
+  assert.equal(getCompletionPrefix('<i18n-t keypath="order.', { line: 0, character: 23 }), 'order.');
+  assert.equal(getCompletionPrefix('<Trans i18nKey="user.', { line: 0, character: 21 }), 'user.');
+  assert.equal(getCompletionPrefix('formatMessage({ id: "nav.', { line: 0, character: 25 }), 'nav.');
 });
 
 test('hover markdown shows all locale values and missing locales', () => {

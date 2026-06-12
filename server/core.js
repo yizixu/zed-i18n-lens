@@ -123,9 +123,14 @@ function makeRange(text, start, end) {
 export function extractI18nKeys(text) {
   const found = [];
   const patterns = [
-    /(?:\x24t|\bt|\bi18n\.t)\(\s*(['\"])([A-Za-z0-9_.:-]+)\1/g,
-    /\bv-t\s*=\s*\"'([A-Za-z0-9_.:-]+)'\"/g,
-    /\bv-t\s*=\s*\"\s*\{\s*path\s*:\s*(['\"])([A-Za-z0-9_.:-]+)\1/g,
+    // t/$t/tc/$tc/i18n.t/i18n.tc(...) — function calls, incl. Vue I18n plural tc
+    /(?:\x24tc?|\btc?|\bi18n\.tc?)\(\s*(['"])([A-Za-z0-9_.:-]+)\1/g,
+    // react-intl: formatMessage({ id: "key" }) (id may not be the first prop)
+    /\bformatMessage\s*\(\s*\{[^}]*?\bid\s*:\s*(['"])([A-Za-z0-9_.:-]+)\1/g,
+    // <i18n-t keypath="key"> (Vue I18n) and <Trans i18nKey="key"> (react-i18next)
+    /\b(?:keypath|i18nKey)\s*=\s*(['"])([A-Za-z0-9_.:-]+)\1/g,
+    /\bv-t\s*=\s*"'([A-Za-z0-9_.:-]+)'"/g,
+    /\bv-t\s*=\s*"\s*\{\s*path\s*:\s*(['"])([A-Za-z0-9_.:-]+)\1/g,
   ];
   for (const re of patterns) {
     let match;
@@ -289,8 +294,17 @@ export function collectLocaleKeyTargets(locales, key, localeTexts = {}, defaultL
 export function getCompletionPrefix(text, position) {
   const offset = positionToOffset(text, position);
   const before = text.slice(0, offset);
-  const match = before.match(/(?:\x24t|\bt|\bi18n\.t)\(\s*['\"]([A-Za-z0-9_.:-]*)$/) || before.match(/v-t\s*=\s*\"'([A-Za-z0-9_.:-]*)$/);
-  return match ? match[1] : '';
+  const patterns = [
+    /(?:\x24tc?|\btc?|\bi18n\.tc?)\(\s*['"]([A-Za-z0-9_.:-]*)$/,
+    /\bformatMessage\s*\(\s*\{[^}]*?\bid\s*:\s*['"]([A-Za-z0-9_.:-]*)$/,
+    /\b(?:keypath|i18nKey)\s*=\s*['"]([A-Za-z0-9_.:-]*)$/,
+    /v-t\s*=\s*"'([A-Za-z0-9_.:-]*)$/,
+  ];
+  for (const re of patterns) {
+    const match = before.match(re);
+    if (match) return match[1];
+  }
+  return '';
 }
 
 export function findJsonKeyLocation(jsonText, key) {
