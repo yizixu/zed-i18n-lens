@@ -1,6 +1,6 @@
 id = "i18n-lens"
 name = "I18n Lens"
-version = "0.6.0"
+version = "0.7.0"
 schema_version = 1
 authors = ["yizixu <yi865729489@gmail.com>"]
 description = "Show configurable inline translations for i18n keys in Vue/TS/TSX, with hover, diagnostics, completion, and definition."
