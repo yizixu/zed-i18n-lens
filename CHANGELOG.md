@@ -4,7 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows semantic versioning while it is developed locally.
 
-## [Unreleased]
+## [0.8.0] - 2026-06-16
+
+### Changed
+
+- Distribution: the language server is now published to npm as `i18n-lens-language-server` and installed at runtime via the Zed Extension API (`npm_install_package`), instead of downloading a bundled `.cjs` from GitHub releases. This follows Zed's extension publishing prerequisites (extensions must not ship the language server, and package names must not contain `zed`). The release workflow now runs `npm publish` (needs an `NPM_TOKEN` secret).
 
 ## [0.7.0] - 2026-06-12
 

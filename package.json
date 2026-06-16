@@ -1,22 +1,26 @@
 {
-  "name": "zed-i18n-lens",
-  "version": "0.7.0",
-  "private": true,
+  "name": "i18n-lens-language-server",
+  "version": "0.8.0",
   "type": "module",
-  "description": "Zed extension + language server for configurable i18n inlay hints, hover, completion, diagnostics, and definition.",
-  "bin": {
-    "zed-i18n-lens-lsp": "./server/index.js"
+  "description": "Language server for configurable i18n inlay hints, hover, completion, diagnostics, and definition in Vue/TS/TSX/JS.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yizixu/zed-i18n-lens.git"
   },
+  "main": "server/index.js",
+  "bin": {
+    "i18n-lens-language-server": "./server/index.js"
+  },
+  "files": [
+    "server/*.js"
+  ],
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "start": "node server/index.js",
-    "build:server": "esbuild server/index.js --bundle --platform=node --target=node18 --format=cjs --outfile=server/dist/i18n-lens-server.cjs"
+    "start": "node server/index.js"
   },
   "dependencies": {
     "vscode-languageserver": "^9.0.1",
     "vscode-languageserver-textdocument": "^1.0.12"
-  },
-  "devDependencies": {
-    "esbuild": "^0.25.0"
   }
 }

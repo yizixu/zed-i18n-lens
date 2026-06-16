@@ -5,52 +5,64 @@ struct I18nLensExtension {
     did_find_server: bool,
 }
 
-/// Kept in sync with the crate version; also used to select the GitHub release
-/// tag and to namespace the downloaded server so a new extension version always
-/// fetches a fresh bundle.
-const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The language server is published to npm and installed into the extension's
+/// work directory at runtime, the same pattern the official Node-based
+/// extensions use. Zed extensions must not ship the language server themselves.
+const PACKAGE_NAME: &str = "i18n-lens-language-server";
+const SERVER_PATH: &str = "node_modules/i18n-lens-language-server/server/index.js";
 
 impl I18nLensExtension {
-    /// Resolves the bundled language server, downloading it into the extension's
-    /// work directory on first use.
-    ///
-    /// A Zed extension cannot reference files committed to its own repository at
-    /// runtime: the wasm guest only has access to its work directory (which maps
-    /// to `current_dir`), while the repository files live in a separate
-    /// `installed` directory whose path is not exposed. The supported pattern is
-    /// therefore to fetch runtime assets into the work directory, exactly like
-    /// the official Node-based extensions (Vue, Svelte, ...).
-    fn server_script_path(&mut self, language_server_id: &zed::LanguageServerId) -> Result<String> {
-        let file_name = format!("i18n-lens-server-{SERVER_VERSION}.cjs");
-        let server_exists = fs::metadata(&file_name).is_ok_and(|stat| stat.is_file());
+    fn server_exists(&self) -> bool {
+        fs::metadata(SERVER_PATH).is_ok_and(|stat| stat.is_file())
+    }
 
-        if !(self.did_find_server && server_exists) && !server_exists {
+    fn server_script_path(&mut self, language_server_id: &zed::LanguageServerId) -> Result<String> {
+        let server_exists = self.server_exists();
+        if self.did_find_server && server_exists {
+            return self.absolute_server_path();
+        }
+
+        zed::set_language_server_installation_status(
+            language_server_id,
+            &zed::LanguageServerInstallationStatus::CheckingForUpdate,
+        );
+        let latest = zed::npm_package_latest_version(PACKAGE_NAME)?;
+
+        if !server_exists
+            || zed::npm_package_installed_version(PACKAGE_NAME)?.as_deref() != Some(latest.as_str())
+        {
             zed::set_language_server_installation_status(
                 language_server_id,
                 &zed::LanguageServerInstallationStatus::Downloading,
             );
-
-            let url = format!(
-                "https://github.com/yizixu/zed-i18n-lens/releases/download/v{SERVER_VERSION}/i18n-lens-server.cjs"
-            );
-
-            zed::download_file(&url, &file_name, zed::DownloadedFileType::Uncompressed)
-                .map_err(|err| format!("failed to download i18n-lens language server: {err}"))?;
-
-            if !fs::metadata(&file_name).is_ok_and(|stat| stat.is_file()) {
-                return Err(format!(
-                    "downloaded i18n-lens language server is missing expected file '{file_name}'"
-                ));
+            match zed::npm_install_package(PACKAGE_NAME, &latest) {
+                Ok(()) => {
+                    if !self.server_exists() {
+                        return Err(format!(
+                            "installed npm package '{PACKAGE_NAME}' is missing expected entry '{SERVER_PATH}'"
+                        ));
+                    }
+                }
+                // If the install fails but a previous version is already present,
+                // keep using it rather than breaking the editor (e.g. offline).
+                Err(error) => {
+                    if !self.server_exists() {
+                        return Err(error);
+                    }
+                }
             }
         }
 
         self.did_find_server = true;
+        self.absolute_server_path()
+    }
 
+    fn absolute_server_path(&self) -> Result<String> {
         // The spawned Node process does not inherit the extension work directory
-        // as its cwd, so the script must be passed as an absolute path.
+        // as its cwd, so pass an absolute path to the installed entry point.
         let absolute = env::current_dir()
             .map_err(|err| format!("failed to resolve extension work directory: {err}"))?
-            .join(&file_name);
+            .join(SERVER_PATH);
         Ok(absolute.to_string_lossy().into_owned())
     }
 }

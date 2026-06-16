@@ -154,23 +154,11 @@ Run tests:
 npm test
 ```
 
-Build the bundled language server:
-
-```bash
-npm run build:server
-```
-
-This bundles `server/index.js` and its dependencies into
-`server/dist/i18n-lens-server.cjs` with esbuild — a single self-contained file
-with no `node_modules` dependency at runtime.
-
-The bundle is **not** committed (`server/dist/` is gitignored). A Zed extension
-cannot run files committed to its own repository: at runtime the extension's
-work directory (where downloaded assets land) is separate from the read-only
-`installed` directory holding the repo files, and the latter's path is not
-exposed to the extension. So the extension downloads the bundle into its work
-directory on first use via `zed::download_file`, the same pattern the official
-Node-based extensions (Vue, Svelte) use.
+The language server is published to npm as
+[`i18n-lens-language-server`](https://www.npmjs.com/package/i18n-lens-language-server).
+A Zed extension must not ship its language server, so the Rust shell installs
+that npm package into its work directory at runtime via the Zed Extension API
+(`npm_install_package`), the same pattern the official Node-based extensions use.
 
 Check the Zed extension adapter:
 
@@ -196,47 +184,36 @@ If inline translations do not appear, check whether inlay hints are enabled in Z
 
 ### Iterating on the language server
 
-After changing `server/*.js`, redeploy the bundle into the local Zed cache and restart the server instead of cutting a release:
+The published npm version can lag behind your working tree. To test local `server/*.js` changes without publishing, pack the current tree and install it into the Zed work directory, then restart the server:
 
 ```powershell
 ./scripts/deploy-local.ps1
 ```
 
-It runs `npm run build:server`, overwrites `%LOCALAPPDATA%\Zed\extensions\work\i18n-lens\i18n-lens-server-<version>.cjs` (version single-sourced from `package.json`), then prompts you to run **restart language server** from the Zed command palette.
+It runs `npm pack`, installs the tarball into `%LOCALAPPDATA%\Zed\extensions\work\i18n-lens\node_modules\i18n-lens-language-server` (the same layout Zed produces), then prompts you to run **restart language server** from the Zed command palette.
 
-> Note: a dev extension can run the bundle from a different location because Zed
-> junctions the `installed` entry to this source folder. To exercise the real
-> download path, make sure a GitHub release matching the current version exists
-> (see below), or delete `~/AppData/Local/Zed/extensions/work/i18n-lens/*` to
-> force a re-download.
+> To exercise the real install path instead, delete `%LOCALAPPDATA%\Zed\extensions\work\i18n-lens\node_modules` and restart the server — Zed will reinstall the published npm package.
 
 ## Releasing
 
-The version is single-sourced from `Cargo.toml` (`CARGO_PKG_VERSION`) and must
-match `extension.toml` and `package.json`. To cut a release:
+The version is single-sourced across `Cargo.toml`, `extension.toml`, and
+`package.json` (they must all match — the release workflow enforces this). To
+cut a release:
 
-1. Bump `version` in `Cargo.toml`, `extension.toml`, and `package.json` (they
-   must all match — the release workflow enforces this).
+1. Bump `version` in `Cargo.toml`, `extension.toml`, and `package.json`.
 2. Tag and push:
 
    ```bash
-   git tag v<version>   # e.g. v0.4.0
+   git tag v<version>   # e.g. v0.7.0
    git push origin v<version>
    ```
 
-   The `.github/workflows/release.yml` workflow then builds the bundle and
-   publishes a GitHub release with `i18n-lens-server.cjs` attached. The
-   extension downloads it at runtime from:
+   The `.github/workflows/release.yml` workflow then verifies the versions
+   match, runs the tests, and publishes the language server to npm as
+   `i18n-lens-language-server`. This requires an `NPM_TOKEN` repository secret
+   with publish rights.
 
-   ```text
-   https://github.com/yizixu/zed-i18n-lens/releases/download/v<version>/i18n-lens-server.cjs
-   ```
-
-   To do it manually instead: `npm run build:server`, then create the release
-   and upload `server/dist/i18n-lens-server.cjs` (asset name must stay
-   `i18n-lens-server.cjs`).
+   To publish manually instead: `npm publish --access public`.
 3. Submit/update the extension in `zed-industries/extensions` (bump the
-   `version` in its `extensions.toml` to match).
-
-If the release asset for the current version is missing, the language server
-will fail to start with a download error.
+   `version` in its `extensions.toml` to match) so Zed picks up the new
+   extension version, which installs the new npm package.
