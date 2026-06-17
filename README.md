@@ -13,6 +13,8 @@ Zed extension plus Language Server for Vue, TypeScript, TSX, JavaScript and JSX.
 
 ## Inline translations
 
+> **Important:** Inline translations are rendered through Zed's LSP inlay hints. In Zed settings, make sure **Inlay Hints** are enabled and **Inlay Hints: Show Other Hints** is turned on. If **Show Other Hints** is disabled, hover/completion/diagnostics can still work, but inline translation text will not be displayed.
+
 When inlay hints are enabled in Zed, code like this:
 
 ```ts
@@ -180,8 +182,6 @@ On this Windows setup, if `cargo` is not visible inside Git Bash / WSL, use:
 4. Open a Vue/TS/JS project with locale JSON files.
 5. Test hover, completion, diagnostics, definition, and inlay hints.
 
-If inline translations do not appear, check whether inlay hints are enabled in Zed settings.
-
 ### Iterating on the language server
 
 The published npm version can lag behind your working tree. To test local `server/*.js` changes without publishing, pack the current tree and install it into the Zed work directory, then restart the server:
@@ -194,26 +194,4 @@ It runs `npm pack`, installs the tarball into `%LOCALAPPDATA%\Zed\extensions\wor
 
 > To exercise the real install path instead, delete `%LOCALAPPDATA%\Zed\extensions\work\i18n-lens\node_modules` and restart the server — Zed will reinstall the published npm package.
 
-## Releasing
 
-The version is single-sourced across `Cargo.toml`, `extension.toml`, and
-`package.json` (they must all match — the release workflow enforces this). To
-cut a release:
-
-1. Bump `version` in `Cargo.toml`, `extension.toml`, and `package.json`.
-2. Tag and push:
-
-   ```bash
-   git tag v<version>   # e.g. v0.7.0
-   git push origin v<version>
-   ```
-
-   The `.github/workflows/release.yml` workflow then verifies the versions
-   match, runs the tests, and publishes the language server to npm as
-   `i18n-lens-language-server`. This requires an `NPM_TOKEN` repository secret
-   with publish rights.
-
-   To publish manually instead: `npm publish --access public`.
-3. Submit/update the extension in `zed-industries/extensions` (bump the
-   `version` in its `extensions.toml` to match) so Zed picks up the new
-   extension version, which installs the new npm package.
