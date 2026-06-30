@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   flattenLocale,
   extractI18nKeys,
+  extractPlaceholders,
   getValueByKey,
   buildHoverMarkdown,
   getDiagnostics,
@@ -67,6 +68,18 @@ test('extractI18nKeys does not misfire on lookalike identifiers', () => {
   assert.deepEqual(keys, ['real.key']);
 });
 
+test('extractI18nKeys collects provided named params from i18n calls', () => {
+  const items = extractI18nKeys('t("cart.items", { count, name: user.name }); tc("cart.total", total, { amount })');
+  assert.deepEqual(items.map((x) => ({ key: x.key, providedParams: x.providedParams })), [
+    { key: 'cart.items', providedParams: ['count', 'name'] },
+    { key: 'cart.total', providedParams: ['amount'] },
+  ]);
+});
+
+test('extractPlaceholders returns ICU-style named placeholders', () => {
+  assert.deepEqual(extractPlaceholders('Hello {name}, you have {count, plural, one {item} other {items}}.'), ['count', 'name']);
+});
+
 test('getCompletionPrefix triggers inside the new i18n syntaxes', () => {
   assert.equal(getCompletionPrefix('$tc("cart.', { line: 0, character: 10 }), 'cart.');
   assert.equal(getCompletionPrefix('<i18n-t keypath="order.', { line: 0, character: 23 }), 'order.');
@@ -127,6 +140,35 @@ test('diagnostics does not report keys present in every locale', () => {
 
 test('diagnostics does not report when no locale files are loaded', () => {
   assert.deepEqual(getDiagnostics('t("order.pay_now")', {}), []);
+});
+
+test('diagnostics reports missing and unused i18n params', () => {
+  const text = 't("cart.items", { total, extra })';
+  const locales = {
+    'en-US': { path: 'en-US.json', flat: { 'cart.items': 'You have {count} items' } },
+    'zh-CN': { path: 'zh-CN.json', flat: { 'cart.items': '共 {count} 件商品' } },
+  };
+  const diagnostics = getDiagnostics(text, locales);
+  assert.deepEqual(diagnostics.map((item) => item.message), [
+    'Missing i18n params for "cart.items": count',
+    'Unused i18n params for "cart.items": extra, total',
+  ]);
+});
+
+test('diagnostics accepts matching i18n params', () => {
+  const text = 't("cart.items", { count })';
+  const locales = { 'en-US': { path: 'en-US.json', flat: { 'cart.items': 'You have {count} items' } } };
+  assert.deepEqual(getDiagnostics(text, locales), []);
+});
+
+test('diagnostics validates react-intl formatMessage params', () => {
+  const text = 'formatMessage({ id: "user.greeting" }, { firstName })';
+  const locales = { 'en-US': { path: 'en-US.json', flat: { 'user.greeting': 'Hello {name}' } } };
+  const diagnostics = getDiagnostics(text, locales);
+  assert.deepEqual(diagnostics.map((item) => item.message), [
+    'Missing i18n params for "user.greeting": name',
+    'Unused i18n params for "user.greeting": firstName',
+  ]);
 });
 
 test('completion returns keys matching prefix with default locale detail', () => {

@@ -122,11 +122,9 @@ function makeRange(text, start, end) {
 
 export function extractI18nKeys(text) {
   const found = [];
+  collectFunctionCallKeys(text, found);
+  collectFormatMessageKeys(text, found);
   const patterns = [
-    // t/$t/tc/$tc/i18n.t/i18n.tc(...) — function calls, incl. Vue I18n plural tc
-    /(?:\x24tc?|\btc?|\bi18n\.tc?)\(\s*(['"])([A-Za-z0-9_.:-]+)\1/g,
-    // react-intl: formatMessage({ id: "key" }) (id may not be the first prop)
-    /\bformatMessage\s*\(\s*\{[^}]*?\bid\s*:\s*(['"])([A-Za-z0-9_.:-]+)\1/g,
     // <i18n-t keypath="key"> (Vue I18n) and <Trans i18nKey="key"> (react-i18next)
     /\b(?:keypath|i18nKey)\s*=\s*(['"])([A-Za-z0-9_.:-]+)\1/g,
     /\bv-t\s*=\s*"'([A-Za-z0-9_.:-]+)'"/g,
@@ -144,6 +142,102 @@ export function extractI18nKeys(text) {
   }
   found.sort((a, b) => a.startOffset - b.startOffset);
   return found;
+}
+
+function collectFunctionCallKeys(text, found) {
+  // t/$t/tc/$tc/i18n.t/i18n.tc(...) — function calls, incl. Vue I18n plural tc
+  const re = /(?:\x24tc?|\btc?|\bi18n\.tc?)\s*\(/g;
+  let match;
+  while ((match = re.exec(text))) {
+    const parenOffset = re.lastIndex - 1;
+    const callText = readParens(text, parenOffset);
+    if (!callText) continue;
+    const keyMatch = callText.match(/^\(\s*(['"])([A-Za-z0-9_.:-]+)\1/);
+    if (!keyMatch) continue;
+    const key = keyMatch[2];
+    const start = parenOffset + keyMatch[0].indexOf(key);
+    const end = start + key.length;
+    const args = splitArgs(callText.slice(1, -1));
+    found.push({ key, range: makeRange(text, start, end), startOffset: start, endOffset: end, providedParams: collectParamNames(args.slice(1)) });
+  }
+}
+
+function collectFormatMessageKeys(text, found) {
+  const re = /\bformatMessage\s*\(/g;
+  let match;
+  while ((match = re.exec(text))) {
+    const parenOffset = re.lastIndex - 1;
+    const callText = readParens(text, parenOffset);
+    if (!callText) continue;
+    const args = splitArgs(callText.slice(1, -1));
+    const idArg = args[0] || '';
+    const keyMatch = idArg.match(/\bid\s*:\s*(['"])([A-Za-z0-9_.:-]+)\1/);
+    if (!keyMatch) continue;
+    const key = keyMatch[2];
+    const start = parenOffset + 1 + idArg.indexOf(key);
+    const end = start + key.length;
+    found.push({ key, range: makeRange(text, start, end), startOffset: start, endOffset: end, providedParams: collectParamNames(args.slice(1)) });
+  }
+}
+
+// Read a balanced (...) starting at `start`.
+function readParens(text, start) {
+  if (text[start] !== '(') return undefined;
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
+    if (ch === '(' || ch === '{' || ch === '[') depth++;
+    else if (ch === ')' || ch === '}' || ch === ']') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return undefined;
+}
+
+function splitArgs(text) {
+  const args = [];
+  let start = 0, depth = 0, quote = '', escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
+    if (ch === '{' || ch === '[' || ch === '(') depth++;
+    else if (ch === '}' || ch === ']' || ch === ')') depth--;
+    else if (ch === ',' && depth === 0) { args.push(text.slice(start, i).trim()); start = i + 1; }
+  }
+  const last = text.slice(start).trim();
+  if (last) args.push(last);
+  return args;
+}
+
+function collectParamNames(args) {
+  const params = new Set();
+  for (const arg of args) {
+    const trimmed = arg.trim();
+    if (!trimmed.startsWith('{')) continue;
+    const body = trimmed.slice(1, trimmed.lastIndexOf('}'));
+    for (const part of splitArgs(body)) {
+      const m = part.trim().match(/^(?:['"]([^'"]+)['"]|([A-Za-z_$][\w$]*))\s*(?::|$)/);
+      const name = m && (m[1] || m[2]);
+      if (name && !part.trim().startsWith('...')) params.add(name);
+    }
+  }
+  return [...params].sort();
 }
 
 export function keyAtPosition(text, position) {
@@ -221,16 +315,16 @@ export function getDiagnostics(text, locales) {
   const localeEntries = Object.entries(locales);
   if (localeEntries.length === 0) return [];
 
-  return extractI18nKeys(text)
-    .map((item) => {
-      const missingLocales = localeEntries
-        .filter(([, locale]) => !Object.prototype.hasOwnProperty.call(locale.flat, item.key))
-        .map(([name]) => name)
-        .sort();
+  return extractI18nKeys(text).flatMap((item) => {
+    const missingLocales = localeEntries
+      .filter(([, locale]) => !Object.prototype.hasOwnProperty.call(locale.flat, item.key))
+      .map(([name]) => name)
+      .sort();
 
-      if (missingLocales.length === 0) return undefined;
+    const diagnostics = [];
+    if (missingLocales.length > 0) {
       const missingInAllLocales = missingLocales.length === localeEntries.length;
-      return {
+      diagnostics.push({
         severity: missingInAllLocales ? 1 : 2,
         range: item.range,
         message: missingInAllLocales
@@ -238,9 +332,64 @@ export function getDiagnostics(text, locales) {
           : 'Missing i18n key "' + item.key + '" in locales: ' + missingLocales.join(', '),
         source: 'i18n-lens',
         data: { key: item.key, missingLocales, missingInAllLocales },
-      };
-    })
-    .filter(Boolean);
+      });
+    }
+    if (missingLocales.length !== localeEntries.length) diagnostics.push(...getParamDiagnostics(item, localeEntries));
+    return diagnostics;
+  });
+}
+
+function getParamDiagnostics(item, localeEntries) {
+  if (!Array.isArray(item.providedParams)) return [];
+  const required = collectRequiredParams(item.key, localeEntries);
+  const provided = new Set(item.providedParams);
+  const missing = required.filter((n) => !provided.has(n));
+  const unused = item.providedParams.filter((n) => !required.includes(n));
+  const diagnostics = [];
+  if (missing.length > 0)
+    diagnostics.push({ severity: 2, range: item.range, message: 'Missing i18n params for "' + item.key + '": ' + missing.join(', '), source: 'i18n-lens', data: { key: item.key, missingParams: missing } });
+  if (unused.length > 0)
+    diagnostics.push({ severity: 2, range: item.range, message: 'Unused i18n params for "' + item.key + '": ' + unused.join(', '), source: 'i18n-lens', data: { key: item.key, unusedParams: unused } });
+  return diagnostics;
+}
+
+function collectRequiredParams(key, localeEntries) {
+  const params = new Set();
+  for (const [, locale] of localeEntries) {
+    const value = locale.flat[key];
+    if (value === undefined) continue;
+    for (const name of extractPlaceholders(value)) params.add(name);
+  }
+  return [...params].sort();
+}
+
+export function extractPlaceholders(value) {
+  const params = new Set();
+  // ICU-style: {name, plural, ...} — extract top-level name, skip nested content
+  let text = String(value);
+  let cursor = 0;
+  while (cursor < text.length) {
+    const open = text.indexOf('{', cursor);
+    if (open === -1) break;
+    const head = text.slice(open).match(/^\{\s*([A-Za-z_$][\w$]*)\s*,/);
+    if (head) {
+      params.add(head[1]);
+      let depth = 0, i = open;
+      while (i < text.length) {
+        if (text[i] === '{') depth++;
+        else if (text[i] === '}') { depth--; if (depth === 0) break; }
+        i++;
+      }
+      text = text.slice(0, open) + ' '.repeat(i - open + 1) + text.slice(i + 1);
+      cursor = open;
+      continue;
+    }
+    cursor = open + 1;
+  }
+  const re = /\{\s*([A-Za-z_$][\w$]*)\s*\}/g;
+  let m;
+  while ((m = re.exec(text))) params.add(m[1]);
+  return [...params].sort();
 }
 
 export function resolvePreferredLocale(locales, defaultLocale) {

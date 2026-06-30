@@ -7,7 +7,7 @@ Zed extension plus Language Server for Vue, TypeScript, TSX, JavaScript and JSX.
 - Inline translation display via LSP inlay hints
 - Detect `$t`/`t`/`tc`/`$tc`/`i18n.t` calls, `v-t="'key'"`, `v-t="{ path: 'key' }"`, `<i18n-t keypath="key">` (Vue I18n), `<Trans i18nKey="key">` (react-i18next), and `formatMessage({ id: "key" })` (react-intl)
 - Hover: show all locale values for a key
-- Diagnostics: report keys missing from every locale file as errors and keys missing from some locales as warnings
+- Diagnostics: report missing keys, missing locale entries, and mismatched interpolation params
 - Completion: suggest existing i18n keys with default locale text
 - Definition: jump from a source key to its locale definition; when several locales define the key, pick which language file to open
 
@@ -41,10 +41,12 @@ To open a specific language file, use Go to Definition (Ctrl/Cmd+click or F12) o
 
 Diagnostics refresh automatically when loaded locale files or locale directories change, so editing translation files should update warnings/errors without restarting the extension.
 
-Diagnostics distinguish between two missing-key cases:
+Diagnostics distinguish between these cases:
 
 - If a key is missing from every loaded locale, it is reported as an error.
 - If a key exists in at least one locale but is missing from other locales, it is reported as a warning listing the missing locale names.
+- If a translation contains named placeholders such as `{count}` but the source call does not pass them, it reports missing params.
+- If the source call passes params that no loaded translation uses, it reports unused params.
 
 For example, if `order.pay_now` exists in `zh-CN` but is missing from `en-US`, the warning message is:
 
