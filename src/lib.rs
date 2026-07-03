@@ -1,5 +1,5 @@
 use std::{env, fs};
-use zed_extension_api::{self as zed, Result};
+use zed_extension_api::{self as zed, settings::LspSettings, Result};
 
 struct I18nLensExtension {
     did_find_server: bool,
@@ -27,10 +27,14 @@ impl I18nLensExtension {
             &zed::LanguageServerInstallationStatus::CheckingForUpdate,
         );
         let latest = zed::npm_package_latest_version(PACKAGE_NAME)?;
+        let installed = zed::npm_package_installed_version(PACKAGE_NAME)?;
 
-        if !server_exists
-            || zed::npm_package_installed_version(PACKAGE_NAME)?.as_deref() != Some(latest.as_str())
-        {
+        let should_install = !server_exists
+            || installed
+                .as_deref()
+                .map_or(true, |version| is_version_outdated(version, &latest));
+
+        if should_install {
             zed::set_language_server_installation_status(
                 language_server_id,
                 &zed::LanguageServerInstallationStatus::Downloading,
@@ -67,11 +71,39 @@ impl I18nLensExtension {
     }
 }
 
+fn is_version_outdated(installed: &str, latest: &str) -> bool {
+    parse_version(installed) < parse_version(latest)
+}
+
+fn parse_version(version: &str) -> Vec<u32> {
+    version
+        .split(['.', '-'])
+        .take(3)
+        .map(|part| part.parse().unwrap_or(0))
+        .collect()
+}
+
 impl zed::Extension for I18nLensExtension {
     fn new() -> Self {
         Self {
             did_find_server: false,
         }
+    }
+
+    fn language_server_initialization_options(
+        &mut self,
+        _language_server_id: &zed::LanguageServerId,
+        worktree: &zed::Worktree,
+    ) -> Result<Option<zed::serde_json::Value>> {
+        Ok(LspSettings::for_worktree("i18n-lens", worktree)?.settings)
+    }
+
+    fn language_server_workspace_configuration(
+        &mut self,
+        _language_server_id: &zed::LanguageServerId,
+        worktree: &zed::Worktree,
+    ) -> Result<Option<zed::serde_json::Value>> {
+        Ok(LspSettings::for_worktree("i18n-lens", worktree)?.settings)
     }
 
     fn language_server_command(

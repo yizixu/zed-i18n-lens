@@ -22,6 +22,18 @@ export function normalizeI18nLensConfig(raw = {}) {
   return { ...base, packages };
 }
 
+export function mergeI18nLensConfig(base = {}, override = {}) {
+  return {
+    ...base,
+    ...override,
+    inlayHints: {
+      ...((base && typeof base.inlayHints === 'object') ? base.inlayHints : {}),
+      ...((override && typeof override.inlayHints === 'object') ? override.inlayHints : {}),
+    },
+    packages: Array.isArray(override?.packages) ? override.packages : base?.packages,
+  };
+}
+
 function normalizeProjectConfig(raw = {}, defaults = DEFAULT_CONFIG) {
   const defaultLocale = typeof raw.defaultLocale === 'string' && raw.defaultLocale.trim()
     ? raw.defaultLocale.trim()

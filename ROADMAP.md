@@ -12,7 +12,7 @@
 
 ## 当前状态
 
-当前已具备（截至 v0.8.3 + Unreleased）：
+当前已具备（截至 v0.9.0）：
 
 - Zed Dev Extension 可加载
 - Language Server 可通过 `--stdio` 启动
@@ -30,7 +30,7 @@
   - Definition 跳转到 locale 定义，多语言时返回每个语言的位置供选择
   - Code Action：为缺失 interpolation params 提供 quick fix（已有对象参数时追加，无对象参数时创建 `{ param }`）
 - 项目配置 `.zed/i18nlensrc.json`（`defaultLocale` / `localeDirs` / `inlayHints`），支持 monorepo `packages` 多上下文
-- 自动化测试：`npm test`，当前 46 个测试通过
+- 自动化测试：`npm test`，当前 47 个测试通过
 - Zed extension 编译验证：`cargo check --target wasm32-wasip1`
 
 ---
@@ -618,19 +618,19 @@ $t('common.submit')
 - monorepo `packages` 多上下文
 - `v0.6.0`：多语言 Definition 跳转（返回每个语言位置供选择）
 - `v0.8.2`：Interpolation params diagnostics
-- `v0.8.3`：缺失 params quick fix（本地完成，待发布）
+- `v0.8.3`：缺失 params quick fix
+- `v0.9.0`：Zed settings 配置桥接（`lsp.i18n-lens.settings`）与发布文档整理
 
 接下来建议优先做：
 
-1. **发布 `v0.8.3` 并同步 `zed-industries/extensions` PR**
-2. **支持 Zed settings 配置桥接**：读取 `lsp.i18n-lens.settings`，与 `.zed/i18nlensrc.json` 合并
-3. **Unused params quick fix**：提供 `Remove unused i18n params: total`
-4. **Code Action 创建缺失 key**：先做 `insertNestedJsonKey` 纯函数 + 测试地基
-5. **Hover params summary**：在 hover 中展示 required/provided/missing/unused params
-6. **Assistant slash command i18n report**：`/i18n-report`、`/i18n-missing`、`/i18n-unused`
-7. 反向跳转 / Find References：从 locale 文件跳回代码使用处
-8. 项目级扫描报告（未使用 / 缺失 key），可与 slash command 共用扫描核心
-9. Rename 同步重命名 key（高风险，待 Code Action 稳定后）
+1. **发布 `v0.9.0` 并同步 `zed-industries/extensions` PR**
+2. **Unused params quick fix**：提供 `Remove unused i18n params: total`
+3. **Code Action 创建缺失 key**：先做 `insertNestedJsonKey` 纯函数 + 测试地基
+4. **Hover params summary**：在 hover 中展示 required/provided/missing/unused params
+5. **Assistant slash command i18n report**：`/i18n-report`、`/i18n-missing`、`/i18n-unused`
+6. 反向跳转 / Find References：从 locale 文件跳回代码使用处
+7. 项目级扫描报告（未使用 / 缺失 key），可与 slash command 共用扫描核心
+8. Rename 同步重命名 key（高风险，待 Code Action 稳定后）
 
 ---
 

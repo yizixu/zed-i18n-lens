@@ -12,6 +12,7 @@ import {
   getCompletionPrefix,
   getInlayHints,
   normalizeI18nLensConfig,
+  mergeI18nLensConfig,
   resolveConfigPath,
   didWatchedFileChange,
   resolvePreferredLocale,
@@ -341,6 +342,19 @@ test('normalizeI18nLensConfig returns defaults when config is empty', () => {
     localeDirs: ['src/locales', 'src/i18n', 'locales', 'i18n'],
     inlayHints: { enabled: true, maxLength: 24 },
     packages: [],
+  });
+});
+
+test('mergeI18nLensConfig combines Zed settings with project config', () => {
+  const merged = mergeI18nLensConfig(
+    { defaultLocale: 'en-US', localeDirs: ['locales'], inlayHints: { enabled: false, maxLength: 18 } },
+    { localeDirs: ['src/i18n'], inlayHints: { maxLength: 32 } },
+  );
+  assert.deepEqual(merged, {
+    defaultLocale: 'en-US',
+    localeDirs: ['src/i18n'],
+    inlayHints: { enabled: false, maxLength: 32 },
+    packages: undefined,
   });
 });
 

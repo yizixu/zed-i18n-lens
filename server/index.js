@@ -16,6 +16,7 @@ import {
   collectLocaleKeyTargets,
   getInlayHints,
   normalizeI18nLensConfig,
+  mergeI18nLensConfig,
   resolveConfigPath,
   CONFIG_RELATIVE_PATH,
   didWatchedFileChange,
@@ -26,6 +27,7 @@ import {
 const connection = createConnection(ProposedFeatures.all);
 const documents = new TextDocuments(TextDocument);
 let workspaceRoot = process.cwd();
+let zedSettingsConfig = {};
 let config = normalizeI18nLensConfig();
 let watchedConfigPath;
 const watchedLocalePaths = new Set();
@@ -38,6 +40,7 @@ const reloadDebounceMs = 100;
 
 connection.onInitialize((params) => {
   workspaceRoot = params.workspaceFolders?.[0]?.uri ? fileURLToPath(params.workspaceFolders[0].uri) : (params.rootUri ? fileURLToPath(params.rootUri) : process.cwd());
+  zedSettingsConfig = normalizeIncomingSettings(params.initializationOptions);
   loadConfig();
   watchConfigFile();
   return { capabilities: { textDocumentSync: TextDocumentSyncKind.Incremental, hoverProvider: true, completionProvider: { triggerCharacters: ['.', '"', "'"] }, definitionProvider: true, inlayHintProvider: true, codeActionProvider: true } };
@@ -58,6 +61,11 @@ documents.onDidOpen((event) => {
 });
 documents.onDidChangeContent((event) => validate(event.document));
 documents.onDidSave(() => scheduleProjectReload());
+
+connection.onDidChangeConfiguration((params) => {
+  zedSettingsConfig = normalizeIncomingSettings(params.settings);
+  scheduleProjectReload();
+});
 
 connection.onHover((params) => {
   const doc = documents.get(params.textDocument.uri);
@@ -191,17 +199,24 @@ function loadConfigIfChanged() {
 
 function loadConfig() {
   const configPath = resolveConfigPath(workspaceRoot);
+  const settingsConfig = zedSettingsConfig;
   configMtimeMs = fs.existsSync(configPath) ? fs.statSync(configPath).mtimeMs : 0;
   if (!configMtimeMs) {
-    config = normalizeI18nLensConfig();
+    config = normalizeI18nLensConfig(settingsConfig);
     return;
   }
   try {
-    config = normalizeI18nLensConfig(JSON.parse(fs.readFileSync(configPath, 'utf8')));
+    const fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    config = normalizeI18nLensConfig(mergeI18nLensConfig(settingsConfig, fileConfig));
   } catch (error) {
     connection.console.warn('Failed to load ' + CONFIG_RELATIVE_PATH + ': ' + error.message);
-    config = normalizeI18nLensConfig();
+    config = normalizeI18nLensConfig(settingsConfig);
   }
+}
+
+function normalizeIncomingSettings(value) {
+  if (!value || typeof value !== 'object') return {};
+  return value['i18n-lens'] && typeof value['i18n-lens'] === 'object' ? value['i18n-lens'] : value;
 }
 
 function validate(document) {
