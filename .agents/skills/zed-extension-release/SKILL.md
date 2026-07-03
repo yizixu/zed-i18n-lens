@@ -18,6 +18,7 @@ The workflow is designed to be careful and public-release oriented. Do not skip 
   - `package.json`
   - `package-lock.json`
   - `README.md`
+  - `CHANGELOG.md`
   - optional `ROADMAP.md`
   - `.github/workflows/release.yml` that publishes npm on `v*` tag push
 - npm package is published from the main repository.
@@ -99,6 +100,23 @@ default config < Zed settings < project config
 - Keep examples internationally understandable. Prefer `en-US`, `ja-JP`, `zh-CN` examples rather than only Chinese defaults, unless the extension intentionally defaults to Chinese.
 - Update `ROADMAP.md` if present: current status, test count, released milestone, next priorities.
 
+#### Update and check `CHANGELOG.md`
+
+`CHANGELOG.md` follows Keep a Changelog with newest version first, each entry as `## [<version>] - <YYYY-MM-DD>` and `### Added` / `### Changed` sections.
+
+- Add an entry for the target version summarizing what changed, plus a `Bumped extension/package/Cargo version from <old> to <new>.` line under `### Changed`.
+- Before releasing, confirm there is **no version gap**: every version ever set in `extension.toml` must have a `CHANGELOG.md` entry. Releases done without a changelog entry are easy to miss (this has happened before). Detect gaps with:
+
+```bash
+git log --format='%H' -- extension.toml \
+  | while read h; do git show "$h:extension.toml" 2>/dev/null | sed -n 's/^version = "\(.*\)"/\1/p'; done \
+  | sort -uV \
+  | while read v; do grep -q "## \[$v\]" CHANGELOG.md || echo "MISSING changelog entry: $v"; done
+```
+
+- If the check prints any `MISSING` version, backfill those entries first (reconstruct each from its bump commit and date via `git log -- extension.toml`) before adding the new one.
+- Match the file's existing language (this project's `CHANGELOG.md` is written in English) and preserve the section format.
+
 ### 3. Bump versions
 
 Update these files to the target version:
@@ -134,6 +152,8 @@ Optional whitespace check with CRLF-aware config if the repo uses CRLF:
 ```bash
 git -c core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol --no-pager diff --check
 ```
+
+Confirm the target version has a `CHANGELOG.md` entry and there are no gaps (see the gap-detection command in step 2). The output must be empty.
 
 Confirm npm target version does not already exist:
 
