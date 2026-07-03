@@ -7,6 +7,7 @@ import {
   getValueByKey,
   buildHoverMarkdown,
   getDiagnostics,
+  getParamCodeActions,
   getCompletions,
   getCompletionPrefix,
   getInlayHints,
@@ -169,6 +170,31 @@ test('diagnostics validates react-intl formatMessage params', () => {
     'Missing i18n params for "user.greeting": name',
     'Unused i18n params for "user.greeting": firstName',
   ]);
+});
+
+test('param code actions add missing params to existing object args', () => {
+  const text = 't("cart.items", { total })';
+  const locales = { 'en-US': { path: 'en-US.json', flat: { 'cart.items': 'You have {count} items' } } };
+  const actions = getParamCodeActions(text, getDiagnostics(text, locales));
+  const offset = actions[0].edit.range.start.character;
+  assert.equal(actions[0].title, 'Add missing i18n params: count');
+  assert.equal(text.slice(0, offset) + actions[0].edit.newText + text.slice(offset), 't("cart.items", { total, count })');
+});
+
+test('param code actions create object args when none exist', () => {
+  const text = 't("cart.items")';
+  const locales = { 'en-US': { path: 'en-US.json', flat: { 'cart.items': 'You have {count} items' } } };
+  const actions = getParamCodeActions(text, getDiagnostics(text, locales));
+  const offset = actions[0].edit.range.start.character;
+  assert.equal(text.slice(0, offset) + actions[0].edit.newText + text.slice(offset), 't("cart.items", { count })');
+});
+
+test('param code actions add missing react-intl params', () => {
+  const text = 'formatMessage({ id: "user.greeting" }, { firstName })';
+  const locales = { 'en-US': { path: 'en-US.json', flat: { 'user.greeting': 'Hello {name}' } } };
+  const actions = getParamCodeActions(text, getDiagnostics(text, locales));
+  const offset = actions[0].edit.range.start.character;
+  assert.equal(text.slice(0, offset) + actions[0].edit.newText + text.slice(offset), 'formatMessage({ id: "user.greeting" }, { firstName, name })');
 });
 
 test('completion returns keys matching prefix with default locale detail', () => {

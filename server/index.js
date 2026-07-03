@@ -2,12 +2,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { createConnection, TextDocuments, ProposedFeatures, TextDocumentSyncKind, MarkupKind } from 'vscode-languageserver/node.js';
+import { createConnection, TextDocuments, ProposedFeatures, TextDocumentSyncKind, MarkupKind, CodeActionKind } from 'vscode-languageserver/node.js';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import {
   flattenLocale,
   buildHoverMarkdown,
   getDiagnostics,
+  getParamCodeActions,
   getCompletions,
   getCompletionPrefix,
   keyAtPosition,
@@ -39,7 +40,7 @@ connection.onInitialize((params) => {
   workspaceRoot = params.workspaceFolders?.[0]?.uri ? fileURLToPath(params.workspaceFolders[0].uri) : (params.rootUri ? fileURLToPath(params.rootUri) : process.cwd());
   loadConfig();
   watchConfigFile();
-  return { capabilities: { textDocumentSync: TextDocumentSyncKind.Incremental, hoverProvider: true, completionProvider: { triggerCharacters: ['.', '"', "'"] }, definitionProvider: true, inlayHintProvider: true } };
+  return { capabilities: { textDocumentSync: TextDocumentSyncKind.Incremental, hoverProvider: true, completionProvider: { triggerCharacters: ['.', '"', "'"] }, definitionProvider: true, inlayHintProvider: true, codeActionProvider: true } };
 });
 
 connection.onInitialized(() => {
@@ -101,6 +102,18 @@ connection.onDefinition((params) => {
       range: { start: position, end: { line: position.line, character: position.character + keyTokenLength } },
     }));
   return locations.length ? locations : null;
+});
+
+connection.onCodeAction((params) => {
+  const doc = documents.get(params.textDocument.uri);
+  if (!doc) return [];
+  return getParamCodeActions(doc.getText(), params.context.diagnostics)
+    .map((action) => ({
+      title: action.title,
+      kind: CodeActionKind.QuickFix,
+      diagnostics: [action.diagnostic],
+      edit: { changes: { [params.textDocument.uri]: [action.edit] } },
+    }));
 });
 
 function getProjectContext(uri) {

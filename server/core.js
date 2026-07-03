@@ -157,8 +157,9 @@ function collectFunctionCallKeys(text, found) {
     const key = keyMatch[2];
     const start = parenOffset + keyMatch[0].indexOf(key);
     const end = start + key.length;
-    const args = splitArgs(callText.slice(1, -1));
-    found.push({ key, range: makeRange(text, start, end), startOffset: start, endOffset: end, providedParams: collectParamNames(args.slice(1)) });
+    const args = splitArgsWithOffsets(callText.slice(1, -1));
+    const paramsEdit = getParamsEdit(args.slice(1), parenOffset + 1, parenOffset + callText.length - 1);
+    found.push({ key, range: makeRange(text, start, end), startOffset: start, endOffset: end, providedParams: collectParamNames(args.slice(1)), paramsEdit });
   }
 }
 
@@ -169,14 +170,15 @@ function collectFormatMessageKeys(text, found) {
     const parenOffset = re.lastIndex - 1;
     const callText = readParens(text, parenOffset);
     if (!callText) continue;
-    const args = splitArgs(callText.slice(1, -1));
-    const idArg = args[0] || '';
+    const args = splitArgsWithOffsets(callText.slice(1, -1));
+    const idArg = args[0]?.text || '';
     const keyMatch = idArg.match(/\bid\s*:\s*(['"])([A-Za-z0-9_.:-]+)\1/);
     if (!keyMatch) continue;
     const key = keyMatch[2];
     const start = parenOffset + 1 + idArg.indexOf(key);
     const end = start + key.length;
-    found.push({ key, range: makeRange(text, start, end), startOffset: start, endOffset: end, providedParams: collectParamNames(args.slice(1)) });
+    const paramsEdit = getParamsEdit(args.slice(1), parenOffset + 1, parenOffset + callText.length - 1);
+    found.push({ key, range: makeRange(text, start, end), startOffset: start, endOffset: end, providedParams: collectParamNames(args.slice(1)), paramsEdit });
   }
 }
 
@@ -225,10 +227,49 @@ function splitArgs(text) {
   return args;
 }
 
+function splitArgsWithOffsets(text) {
+  const args = [];
+  let start = 0, depth = 0, quote = '', escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
+    if (ch === '{' || ch === '[' || ch === '(') depth++;
+    else if (ch === '}' || ch === ']' || ch === ')') depth--;
+    else if (ch === ',' && depth === 0) { args.push(trimArg(text, start, i)); start = i + 1; }
+  }
+  const last = trimArg(text, start, text.length);
+  if (last.text) args.push(last);
+  return args;
+}
+
+function trimArg(text, start, end) {
+  while (start < end && /\s/.test(text[start])) start++;
+  while (end > start && /\s/.test(text[end - 1])) end--;
+  return { text: text.slice(start, end), start, end };
+}
+
+function getParamsEdit(args, argsStartOffset, closingParenOffset) {
+  const objectArg = args.find((arg) => arg.text.startsWith('{') && arg.text.lastIndexOf('}') > 0);
+  if (objectArg) {
+    const closeBrace = objectArg.text.lastIndexOf('}');
+    let insertAt = closeBrace;
+    while (insertAt > 1 && /\s/.test(objectArg.text[insertAt - 1])) insertAt--;
+    const body = objectArg.text.slice(1, insertAt);
+    return { insertOffset: argsStartOffset + objectArg.start + insertAt, prefix: body.trim() ? ', ' : ' ' };
+  }
+  return { insertOffset: closingParenOffset, prefix: ', { ', suffix: ' }' };
+}
+
 function collectParamNames(args) {
   const params = new Set();
   for (const arg of args) {
-    const trimmed = arg.trim();
+    const trimmed = (typeof arg === 'string' ? arg : arg.text).trim();
     if (!trimmed.startsWith('{')) continue;
     const body = trimmed.slice(1, trimmed.lastIndexOf('}'));
     for (const part of splitArgs(body)) {
@@ -361,6 +402,29 @@ function collectRequiredParams(key, localeEntries) {
     for (const name of extractPlaceholders(value)) params.add(name);
   }
   return [...params].sort();
+}
+
+export function getParamCodeActions(text, diagnostics = []) {
+  const items = extractI18nKeys(text);
+  return diagnostics.flatMap((diagnostic) => {
+    const missingParams = diagnostic.data?.missingParams;
+    if (!Array.isArray(missingParams) || missingParams.length === 0) return [];
+    const item = items.find((candidate) => candidate.key === diagnostic.data?.key && sameRange(candidate.range, diagnostic.range));
+    if (!item?.paramsEdit) return [];
+    const newText = item.paramsEdit.prefix + missingParams.join(', ') + (item.paramsEdit.suffix || '');
+    return [{
+      title: 'Add missing i18n params: ' + missingParams.join(', '),
+      diagnostic,
+      edit: { range: makeRange(text, item.paramsEdit.insertOffset, item.paramsEdit.insertOffset), newText },
+    }];
+  });
+}
+
+function sameRange(a, b) {
+  return a?.start?.line === b?.start?.line
+    && a?.start?.character === b?.start?.character
+    && a?.end?.line === b?.end?.line
+    && a?.end?.character === b?.end?.character;
 }
 
 export function extractPlaceholders(value) {

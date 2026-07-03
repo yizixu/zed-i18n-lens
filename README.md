@@ -47,6 +47,7 @@ Diagnostics distinguish between these cases:
 - If a key exists in at least one locale but is missing from other locales, it is reported as a warning listing the missing locale names.
 - If a translation contains named placeholders such as `{count}` but the source call does not pass them, it reports missing params.
 - If the source call passes params that no loaded translation uses, it reports unused params.
+- Quick fixes can add missing params to supported i18n calls.
 
 For example, if `order.pay_now` exists in `zh-CN` but is missing from `en-US`, the warning message is:
 
