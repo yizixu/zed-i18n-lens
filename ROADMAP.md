@@ -12,7 +12,7 @@
 
 ## 当前状态
 
-当前已具备（截至 v0.6.0 + Unreleased）：
+当前已具备（截至 v0.8.3 + Unreleased）：
 
 - Zed Dev Extension 可加载
 - Language Server 可通过 `--stdio` 启动
@@ -25,11 +25,12 @@
 - 支持能力：
   - Inlay Hints 行内显示默认语言翻译
   - Hover 查看 key 对应多语言翻译（只读表格）
-  - Diagnostics：全缺为 error，部分语言缺失为 warning
+  - Diagnostics：全缺为 error，部分语言缺失为 warning，并校验 interpolation params 缺失/多余
   - Completion 补全已有 i18n key
   - Definition 跳转到 locale 定义，多语言时返回每个语言的位置供选择
+  - Code Action：为缺失 interpolation params 提供 quick fix（已有对象参数时追加，无对象参数时创建 `{ param }`）
 - 项目配置 `.zed/i18nlensrc.json`（`defaultLocale` / `localeDirs` / `inlayHints`），支持 monorepo `packages` 多上下文
-- 自动化测试：`npm test`，当前 38 个测试通过
+- 自动化测试：`npm test`，当前 46 个测试通过
 - Zed extension 编译验证：`cargo check --target wasm32-wasip1`
 
 ---
@@ -302,6 +303,44 @@ cargo check passed
 
 ---
 
+### v0.8.2: Interpolation params diagnostics 占位符参数诊断
+
+**Status:** Done
+
+已完成 i18n 调用参数与翻译占位符的匹配校验：
+
+- 从 `t` / `$t` / `tc` / `$tc` / `i18n.t` / `i18n.tc` / `formatMessage` 调用中提取传入 params
+- 从翻译文案中提取 `{name}` 与 ICU 风格 `{count, plural, ...}` 占位符
+- 缺少参数时报告 warning：`Missing i18n params for "key": count`
+- 多余参数时报告 warning：`Unused i18n params for "key": total`
+- 保持 missing key diagnostics 原有行为不回归
+
+验证结果：
+
+```text
+43 tests passed
+cargo check passed
+```
+
+### v0.8.3: Params quick fix 参数快速修复
+
+**Status:** Done locally / Unreleased
+
+已完成缺失参数 quick fix：
+
+- 已有对象参数时追加缺失参数：`t("cart.items", { total })` -> `t("cart.items", { total, count })`
+- 无对象参数时创建 params 对象：`t("cart.items")` -> `t("cart.items", { count })`
+- 支持 react-intl：`formatMessage({ id }, { firstName })` -> `formatMessage({ id }, { firstName, name })`
+- 通过 LSP `textDocument/codeAction` 暴露为 `CodeActionKind.QuickFix`
+- 已本地部署到 Zed work 目录并手动验证通过
+
+验证结果：
+
+```text
+46 tests passed
+cargo check passed
+```
+
 ## 中期目标：提升真实项目可用性
 
 ### Task 5: 支持 TypeScript locale module
@@ -548,6 +587,25 @@ $t('common.submit')
 
 ---
 
+## Zed Extension API 调研结论（0.7.0）
+
+当前 docs.rs latest 仍为 `zed_extension_api 0.7.0`，项目已使用该版本，无需升级。可利用的新方向：
+
+1. **Zed settings 配置桥接**
+   - API：`Extension::language_server_workspace_configuration`、`settings::LspSettings::for_worktree`
+   - 目标：允许用户在 Zed settings 的 `lsp.i18n-lens.settings` 中配置 `defaultLocale` / `localeDirs` / `inlayHints`，减少必须创建 `.zed/i18nlensrc.json` 的门槛。
+2. **Assistant Slash Command 报告**
+   - API：`Extension::run_slash_command`、`complete_slash_command_argument`
+   - 目标：提供 `/i18n-report`、`/i18n-missing`、`/i18n-unused` 等报告型能力。
+3. **Context Server 长期方向**
+   - API：`context_server_command`、`context_server_configuration`
+   - 目标：把 locale index / key usage 暴露给 Zed Assistant 作为上下文。
+4. **暂不依赖 Zed AI API**
+   - `zed_extension_api 0.7.0` 未看到直接调用 Inline AI / Agent Edit 的稳定 API。
+   - AI 自动抽取文案暂缓；优先做确定性的 LSP diagnostics / code actions / report。
+
+---
+
 ## 推荐优先级
 
 已完成：
@@ -559,16 +617,20 @@ $t('common.submit')
 - `v0.5.1`：配置路径迁移到 `.zed/`
 - monorepo `packages` 多上下文
 - `v0.6.0`：多语言 Definition 跳转（返回每个语言位置供选择）
-- Unreleased：扩展 i18n 写法识别（`tc`/`$tc`、`<i18n-t>`、`<Trans>`、`formatMessage`）
+- `v0.8.2`：Interpolation params diagnostics
+- `v0.8.3`：缺失 params quick fix（本地完成，待发布）
 
 接下来建议优先做：
 
-1. Code Action 创建缺失 key（先做 `insertNestedJsonKey` 纯函数 + 测试地基）
-2. 反向跳转 / Find References：从 locale 文件跳回代码使用处
-3. 继续扩展写法识别（`<FormattedMessage>`、`te`/`$te`、函数名配置化）
-4. 项目级扫描报告（未使用 / 缺失 key）
-5. 性能优化与缓存
-6. Rename 同步重命名 key（高风险，待 Code Action 稳定后）
+1. **发布 `v0.8.3` 并同步 `zed-industries/extensions` PR**
+2. **支持 Zed settings 配置桥接**：读取 `lsp.i18n-lens.settings`，与 `.zed/i18nlensrc.json` 合并
+3. **Unused params quick fix**：提供 `Remove unused i18n params: total`
+4. **Code Action 创建缺失 key**：先做 `insertNestedJsonKey` 纯函数 + 测试地基
+5. **Hover params summary**：在 hover 中展示 required/provided/missing/unused params
+6. **Assistant slash command i18n report**：`/i18n-report`、`/i18n-missing`、`/i18n-unused`
+7. 反向跳转 / Find References：从 locale 文件跳回代码使用处
+8. 项目级扫描报告（未使用 / 缺失 key），可与 slash command 共用扫描核心
+9. Rename 同步重命名 key（高风险，待 Code Action 稳定后）
 
 ---
 
