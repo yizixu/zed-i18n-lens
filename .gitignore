@@ -29,8 +29,8 @@ desktop.ini
 # Editor / IDE local state
 .vscode/
 .idea/
+.claude/
 .zed/*
-!.zed/i18nlensrc.example.json
 
 # Temporary files
 *.tmp
