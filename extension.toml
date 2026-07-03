@@ -1,11 +1,11 @@
 id = "i18n-lens"
 name = "I18n Lens"
-version = "0.9.0"
+version = "0.10.0"
 schema_version = 1
 authors = ["yizixu <yi865729489@gmail.com>"]
-description = "Show configurable inline translations for i18n keys in Vue/TS/TSX, with hover, diagnostics, completion, and definition."
+description = "Show configurable inline translations for i18n keys in Vue/TS/TSX, with hover, diagnostics, completion, definition, and references."
 repository = "https://github.com/yizixu/zed-i18n-lens"
 
 [language_servers.i18n-lens]
 name = "I18n Lens Language Server"
-languages = ["Vue.js", "TypeScript", "TSX", "JavaScript"]
+languages = ["Vue.js", "TypeScript", "TSX", "JavaScript", "JSON", "JSONC"]

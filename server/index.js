@@ -14,6 +14,8 @@ import {
   keyAtPosition,
   parseTsLocaleModule,
   collectLocaleKeyTargets,
+  localeKeyAtPosition,
+  findCodeKeyRanges,
   getInlayHints,
   normalizeI18nLensConfig,
   mergeI18nLensConfig,
@@ -43,7 +45,7 @@ connection.onInitialize((params) => {
   zedSettingsConfig = normalizeIncomingSettings(params.initializationOptions);
   loadConfig();
   watchConfigFile();
-  return { capabilities: { textDocumentSync: TextDocumentSyncKind.Incremental, hoverProvider: true, completionProvider: { triggerCharacters: ['.', '"', "'"] }, definitionProvider: true, inlayHintProvider: true, codeActionProvider: true } };
+  return { capabilities: { textDocumentSync: TextDocumentSyncKind.Incremental, hoverProvider: true, completionProvider: { triggerCharacters: ['.', '"', "'"] }, definitionProvider: true, referencesProvider: true, inlayHintProvider: true, codeActionProvider: true } };
 });
 
 connection.onInitialized(() => {
@@ -81,6 +83,7 @@ connection.onHover((params) => {
 });
 
 connection.onCompletion((params) => {
+  if (!isSourceFile(params.textDocument.uri)) return [];
   const doc = documents.get(params.textDocument.uri);
   const context = getProjectContext(params.textDocument.uri);
   const { locales } = loadLocalesForContext(context);
@@ -89,6 +92,7 @@ connection.onCompletion((params) => {
 });
 
 connection.languages.inlayHint.on((params) => {
+  if (!isSourceFile(params.textDocument.uri)) return [];
   const doc = documents.get(params.textDocument.uri);
   if (!doc) return [];
   const context = getProjectContext(params.textDocument.uri);
@@ -109,6 +113,26 @@ connection.onDefinition((params) => {
       uri: pathToFileURL(filePath).toString(),
       range: { start: position, end: { line: position.line, character: position.character + keyTokenLength } },
     }));
+  return locations.length ? locations : null;
+});
+
+connection.onReferences((params) => {
+  const uri = params.textDocument.uri;
+  const context = getProjectContext(uri);
+  const key = resolveKeyAtPosition(uri, params.position, context);
+  if (!key) return null;
+
+  const locations = collectCodeReferences(context, key);
+  if (params.context?.includeDeclaration) {
+    const { locales, localeTexts } = loadLocalesForContext(context);
+    const keyTokenLength = key.split('.').at(-1).length + 2;
+    for (const { filePath, position } of collectLocaleKeyTargets(locales, key, localeTexts, context.config.defaultLocale)) {
+      locations.push({
+        uri: pathToFileURL(filePath).toString(),
+        range: { start: position, end: { line: position.line, character: position.character + keyTokenLength } },
+      });
+    }
+  }
   return locations.length ? locations : null;
 });
 
@@ -226,6 +250,72 @@ function validate(document) {
   connection.sendDiagnostics({ uri: document.uri, diagnostics: getDiagnostics(document.getText(), locales) });
 }
 function isSourceFile(uri) { return /\.(vue|tsx?|jsx?)$/i.test(uri); }
+
+const IGNORED_SCAN_DIRS = new Set(['node_modules', 'dist', 'build', 'out', 'coverage', 'vendor', '.output', '.next', '.nuxt', '.cache']);
+const MAX_SCAN_FILES = 5000;
+
+// Resolve the i18n key under `position`, whether the caret sits on a t()/keypath
+// usage in source code or on a key inside a locale JSON/TS file.
+function resolveKeyAtPosition(uri, position, context) {
+  const filePath = fileURLToPath(uri);
+  const text = documents.get(uri)?.getText() ?? readFileSafe(filePath);
+  if (!text) return undefined;
+  if (isSourceFile(uri)) return keyAtPosition(text, position)?.key;
+  const { locales } = loadLocalesForContext(context);
+  const locale = findLocaleForFile(locales, filePath);
+  return locale ? localeKeyAtPosition(locale, filePath, text, position) : undefined;
+}
+
+function findLocaleForFile(locales, filePath) {
+  const target = path.resolve(filePath);
+  for (const locale of Object.values(locales)) {
+    const files = locale.files?.length ? locale.files : (locale.path ? [locale.path] : []);
+    if (files.some((file) => path.resolve(file) === target)) return locale;
+  }
+  return undefined;
+}
+
+// Every source-code usage of `key` within the project/package root. Prefers the
+// in-memory text of open (possibly unsaved) documents over the on-disk copy.
+function collectCodeReferences(context, key) {
+  const openTextByPath = new Map();
+  for (const doc of documents.all()) {
+    try { openTextByPath.set(path.resolve(fileURLToPath(doc.uri)), doc.getText()); } catch { /* non-file uri */ }
+  }
+  const locations = [];
+  for (const filePath of collectSourceFiles(context.root)) {
+    const text = openTextByPath.get(path.resolve(filePath)) ?? readFileSafe(filePath);
+    if (!text) continue;
+    for (const range of findCodeKeyRanges(text, key)) {
+      locations.push({ uri: pathToFileURL(filePath).toString(), range });
+    }
+  }
+  return locations;
+}
+
+function collectSourceFiles(root) {
+  const files = [];
+  const stack = [root];
+  while (stack.length && files.length < MAX_SCAN_FILES) {
+    const dir = stack.pop();
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith('.') || IGNORED_SCAN_DIRS.has(entry.name)) continue;
+        stack.push(full);
+      } else if (isSourceFile(entry.name)) {
+        files.push(full);
+      }
+    }
+  }
+  return files;
+}
+
+function readFileSafe(filePath) {
+  try { return fs.readFileSync(filePath, 'utf8'); } catch { return undefined; }
+}
 
 function getAllConfiguredContexts() {
   loadConfigIfChanged();

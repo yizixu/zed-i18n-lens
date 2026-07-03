@@ -4,6 +4,61 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows semantic versioning while it is developed locally.
 
+## [0.10.0] - 2026-07-03
+
+### Added
+
+- Find References: from a key in a locale file (JSON or TS/JS locale module) or from a source usage, list every place in the project's source code that uses the key. Works both directions; caret resolution reuses the same key/location logic as Go to Definition (precise for JSON, best-effort line-based for TS/JS locale modules).
+- The language server now attaches to `JSON`/`JSONC` files so Find References can be invoked directly from `.json` locale files.
+- Added `localeKeyAtPosition` and `findCodeKeyRanges` core helpers with tests.
+
+### Changed
+
+- Completion and inlay hints are now limited to source files, so editing JSON locale files no longer surfaces i18n key completions.
+- Bumped extension/package/Cargo version from `0.9.0` to `0.10.0`.
+
+## [0.9.0] - 2026-07-03
+
+### Added
+
+- Zed settings bridge: configure the extension directly from Zed settings under `lsp.i18n-lens.settings` (`defaultLocale`, `localeDirs`, `inlayHints`, `packages`), forwarded to the language server as LSP initialization options and workspace configuration. When both are present, `.zed/i18nlensrc.json` is merged on top of the Zed settings (project config wins), with `inlayHints` deep-merged. Settings changes apply live via `workspace/didChangeConfiguration`.
+- Added `mergeI18nLensConfig` core helper with tests for combining Zed settings with project config.
+
+### Changed
+
+- Server update check now compares installed vs. latest versions numerically and only reinstalls when the installed server is actually older, instead of reinstalling on any string mismatch.
+- Bumped extension/package/Cargo version from `0.8.3` to `0.9.0`.
+
+## [0.8.3] - 2026-07-03
+
+### Added
+
+- Quick fix: add missing interpolation params to supported i18n calls (`t`/`$t`/`tc`/`$tc`, `formatMessage`), inserting the required param names into (or alongside) the params object.
+- Added tests for the missing-params code action.
+
+### Changed
+
+- Bumped extension/package/Cargo version from `0.8.2` to `0.8.3`.
+
+## [0.8.2] - 2026-06-30
+
+### Added
+
+- Diagnostics for interpolation params: report params that a call is missing versus the placeholders required by the locale text, and params passed but never used. Supports ICU-style `{name, plural, ...}` and simple `{name}` placeholders.
+- Added tests for placeholder extraction and missing/unused param diagnostics.
+
+### Changed
+
+- Bumped extension/package/Cargo version from `0.8.1` to `0.8.2`.
+
+## [0.8.1] - 2026-06-16
+
+### Changed
+
+- Fixed package metadata path format and hardened the release workflow with a published-version existence check to avoid republishing an existing version.
+- Synced `Cargo.lock` to the bumped version and expanded README notes on enabling inline hints in Zed.
+- Bumped extension/package/Cargo version from `0.8.0` to `0.8.1`.
+
 ## [0.8.0] - 2026-06-16
 
 ### Changed

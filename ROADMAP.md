@@ -1,7 +1,5 @@
 # Zed i18n Lens 路线计划
 
-> **For Hermes:** 后续如果要按本计划继续实现，请优先使用 `subagent-driven-development` + `test-driven-development`，按任务逐项实现、逐项验证。
-
 **Goal:** 把当前已支持行内翻译和项目配置的 MVP 打磨成一个稳定、可配置、可发布的 Zed i18n 辅助插件。
 
 **Architecture:** 继续保持「Zed Extension 薄壳 + Node.js Language Server + 可测试 core」架构。Zed Rust/WASM 层只负责注册和启动 LSP；复杂逻辑都放在 `server/core.js` / `server/index.js`，并通过 `tests/core.test.js` 覆盖。
@@ -620,6 +618,7 @@ $t('common.submit')
 - `v0.8.2`：Interpolation params diagnostics
 - `v0.8.3`：缺失 params quick fix
 - `v0.9.0`：Zed settings 配置桥接（`lsp.i18n-lens.settings`）与发布文档整理
+- 反向跳转 / Find References：从 locale 文件（或源码用法）跳回代码所有使用处
 
 接下来建议优先做：
 
@@ -628,9 +627,8 @@ $t('common.submit')
 3. **Code Action 创建缺失 key**：先做 `insertNestedJsonKey` 纯函数 + 测试地基
 4. **Hover params summary**：在 hover 中展示 required/provided/missing/unused params
 5. **Assistant slash command i18n report**：`/i18n-report`、`/i18n-missing`、`/i18n-unused`
-6. 反向跳转 / Find References：从 locale 文件跳回代码使用处
-7. 项目级扫描报告（未使用 / 缺失 key），可与 slash command 共用扫描核心
-8. Rename 同步重命名 key（高风险，待 Code Action 稳定后）
+6. 项目级扫描报告（未使用 / 缺失 key），可与 slash command 共用扫描核心
+7. Rename 同步重命名 key（高风险，待 Code Action 稳定后）
 
 ---
 

@@ -11,6 +11,7 @@ Zed extension plus Language Server for Vue, TypeScript, TSX, JavaScript and JSX.
 - Quick fixes: add missing interpolation params to supported i18n calls
 - Completion: suggest existing i18n keys with default locale text
 - Definition: jump from a source key to its locale definition; when several locales define the key, pick which language file to open
+- References: from a key in a locale file (or a source usage), find every place the key is used across the project's source code
 
 ## Installation
 

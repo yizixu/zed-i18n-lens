@@ -21,6 +21,8 @@ import {
   findJsonKeyLocation,
   findLocaleKeyTarget,
   collectLocaleKeyTargets,
+  localeKeyAtPosition,
+  findCodeKeyRanges,
   resolveProjectContext,
 } from '../server/core.js';
 
@@ -293,6 +295,38 @@ test('collectLocaleKeyTargets returns every locale that defines the key, default
     { filePath: '/repo/src/locales/zh-CN/common.json', position: { line: 1, character: 2 } },
     { filePath: '/repo/src/locales/en-US.json', position: { line: 2, character: 4 } },
   ]);
+});
+
+test('findCodeKeyRanges returns every source usage of a key', () => {
+  const text = 'const a = t("order.pay_now")\nconst b = $t("common.ok")\nconst c = t("order.pay_now")';
+  const ranges = findCodeKeyRanges(text, 'order.pay_now');
+  assert.equal(ranges.length, 2);
+  assert.deepEqual(ranges[0].start, { line: 0, character: 13 });
+  assert.deepEqual(ranges[1].start, { line: 2, character: 13 });
+});
+
+test('localeKeyAtPosition resolves the full key from a flat JSON caret', () => {
+  const locale = {
+    path: '/repo/src/locales/zh-CN.json',
+    flat: { 'order.pay_now': '立即支付' },
+    files: ['/repo/src/locales/zh-CN.json'],
+  };
+  const text = '{\n  "order": {\n    "pay_now": "立即支付"\n  }\n}\n';
+  assert.equal(localeKeyAtPosition(locale, locale.path, text, { line: 2, character: 8 }), 'order.pay_now');
+  assert.equal(localeKeyAtPosition(locale, locale.path, text, { line: 0, character: 0 }), undefined);
+});
+
+test('localeKeyAtPosition restores the file-stem prefix for nested locale files', () => {
+  const locale = {
+    path: '/repo/src/locales/zh-CN',
+    flat: { 'common.ok': '确定' },
+    files: ['/repo/src/locales/zh-CN/common.json'],
+  };
+  const text = '{\n  "ok": "确定"\n}\n';
+  assert.equal(
+    localeKeyAtPosition(locale, '/repo/src/locales/zh-CN/common.json', text, { line: 1, character: 4 }),
+    'common.ok',
+  );
 });
 
 test('getValueByKey reads nested objects', () => {

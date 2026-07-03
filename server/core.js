@@ -298,6 +298,11 @@ export function keyAtPosition(text, position) {
   return extractI18nKeys(text).find((item) => item.startOffset <= offset && offset <= item.endOffset);
 }
 
+// Reverse of Go to Definition: every range in `text` (source code) that uses `key`.
+export function findCodeKeyRanges(text, key) {
+  return extractI18nKeys(text).filter((item) => item.key === key).map((item) => item.range);
+}
+
 export function positionToOffset(text, position) {
   const lines = text.split('\n');
   let offset = 0;
@@ -514,6 +519,29 @@ export function collectLocaleKeyTargets(locales, key, localeTexts = {}, defaultL
   return getDefinitionLocaleOrder(locales, defaultLocale)
     .map((locale) => findLocaleKeyTarget(locale, key, localeTexts))
     .filter((target) => target?.position);
+}
+
+// Inverse of findLocaleKeyTarget: given a caret position inside a locale file,
+// return the full flattened key it points at (so Find References can jump back
+// to the code). Reuses the same key->location logic as Go to Definition to stay
+// consistent; precise for JSON, best-effort (line-based) for TS/JS locale modules.
+export function localeKeyAtPosition(locale, filePath, text, position) {
+  if (!locale || !locale.flat || !text || !position) return undefined;
+  const isJson = /\.json$/i.test(filePath);
+  let lineFallback;
+  let lineFallbackCount = 0;
+  for (const fullKey of Object.keys(locale.flat)) {
+    const lookupKey = lookupKeyForLocaleFile(locale, filePath, fullKey);
+    const loc = isJson ? findJsonKeyLocation(text, lookupKey) : findLocaleKeyLocation(text, lookupKey);
+    if (!loc || loc.line !== position.line) continue;
+    const leaf = lookupKey.split('.').at(-1);
+    const tokenStart = loc.character;
+    const tokenEnd = tokenStart + leaf.length + (isJson ? 2 : 0);
+    if (position.character >= tokenStart && position.character <= tokenEnd) return fullKey;
+    lineFallback = fullKey;
+    lineFallbackCount++;
+  }
+  return lineFallbackCount === 1 ? lineFallback : undefined;
 }
 
 export function getCompletionPrefix(text, position) {

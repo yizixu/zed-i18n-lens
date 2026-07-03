@@ -1,8 +1,8 @@
 {
   "name": "i18n-lens-language-server",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "type": "module",
-  "description": "Language server for configurable i18n inlay hints, hover, completion, diagnostics, and definition in Vue/TS/TSX/JS.",
+  "description": "Language server for configurable i18n inlay hints, hover, completion, diagnostics, definition, and references in Vue/TS/TSX/JS.",
   "license": "MIT",
   "repository": {
     "type": "git",
