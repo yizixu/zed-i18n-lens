@@ -4,13 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows semantic versioning while it is developed locally.
 
-## [Unreleased]
+## [0.11.0] - 2026-07-06
 
 ### Added
 
-- Diagnostics on locale files: warn when a key's interpolation params differ across languages (e.g. `en-US` has `{name}` but `zh-CN` forgot it), anchored at the key in each locale file. Backed by the new `getLocaleParamConsistency` / `getLocaleParamDiagnostics` core helpers.
+- Diagnostics for cross-locale param inconsistency: warn when a key's interpolation params differ across languages (e.g. `en-US` has `{name}` but `zh-CN` forgot it). Surfaced both on the locale files (at the key) and at each source usage site. Backed by the new `getLocaleParamConsistency` / `getLocaleParamDiagnostics` core helpers.
 - Quick fix: remove unused interpolation params from a supported i18n call, rebuilding the params object while keeping the params that are still used.
 - Quick fix: create a missing i18n key (empty value) in every locale file that lacks it, as a cross-file workspace edit. Backed by the new `insertNestedJsonKey` core helper, which surgically inserts a dotted key and preserves the file's indentation. Only single flat JSON locale files are supported for now.
+
+### Changed
+
+- Bumped extension/package/Cargo version from `0.10.0` to `0.11.0`.
 
 ## [0.10.0] - 2026-07-03
 
