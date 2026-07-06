@@ -8,7 +8,9 @@ import {
   flattenLocale,
   buildHoverMarkdown,
   getDiagnostics,
+  getLocaleParamDiagnostics,
   getParamCodeActions,
+  insertNestedJsonKey,
   getCompletions,
   getCompletionPrefix,
   keyAtPosition,
@@ -138,15 +140,68 @@ connection.onReferences((params) => {
 
 connection.onCodeAction((params) => {
   const doc = documents.get(params.textDocument.uri);
-  if (!doc) return [];
-  return getParamCodeActions(doc.getText(), params.context.diagnostics)
-    .map((action) => ({
-      title: action.title,
-      kind: CodeActionKind.QuickFix,
-      diagnostics: [action.diagnostic],
-      edit: { changes: { [params.textDocument.uri]: [action.edit] } },
-    }));
+  const diagnostics = params.context.diagnostics || [];
+  const actions = [];
+  if (doc) {
+    for (const action of getParamCodeActions(doc.getText(), diagnostics)) {
+      actions.push({
+        title: action.title,
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [action.diagnostic],
+        edit: { changes: { [params.textDocument.uri]: [action.edit] } },
+      });
+    }
+  }
+  actions.push(...getCreateKeyActions(diagnostics, getProjectContext(params.textDocument.uri)));
+  return actions;
 });
+
+// Quick fix for a "missing i18n key" diagnostic: create the key (empty value) in
+// every locale file that lacks it, as a cross-file workspace edit. Only single
+// flat JSON locale files are supported; nested/TS locales are skipped.
+function getCreateKeyActions(diagnostics, context) {
+  const { locales, localeTexts } = loadLocalesForContext(context);
+  const actions = [];
+  for (const diagnostic of diagnostics) {
+    const key = diagnostic.data?.key;
+    const missingLocales = diagnostic.data?.missingLocales;
+    if (!key || !Array.isArray(missingLocales) || missingLocales.length === 0) continue;
+
+    const changes = {};
+    for (const name of missingLocales) {
+      const filePath = flatLocaleFile(locales[name]);
+      if (!filePath) continue;
+      const text = localeTexts[filePath] ?? readFileSafe(filePath);
+      if (text === undefined) continue;
+      const newText = insertNestedJsonKey(text, key, '');
+      if (newText === undefined) continue;
+      changes[pathToFileURL(filePath).toString()] = [fullDocumentEdit(text, newText)];
+    }
+
+    const fileCount = Object.keys(changes).length;
+    if (fileCount === 0) continue;
+    actions.push({
+      title: `Create i18n key "${key}" in ${fileCount} locale file(s)`,
+      kind: CodeActionKind.QuickFix,
+      diagnostics: [diagnostic],
+      edit: { changes },
+    });
+  }
+  return actions;
+}
+
+// A locale backed by a single flat .json file (not a nested directory locale).
+function flatLocaleFile(locale) {
+  if (!locale || !/\.json$/i.test(locale.path || '')) return undefined;
+  const files = locale.files?.length ? locale.files : [locale.path];
+  return files.length === 1 && files[0] === locale.path ? locale.path : undefined;
+}
+
+function fullDocumentEdit(oldText, newText) {
+  const lines = oldText.split('\n');
+  const endLine = lines.length - 1;
+  return { range: { start: { line: 0, character: 0 }, end: { line: endLine, character: lines[endLine].length } }, newText };
+}
 
 function getProjectContext(uri) {
   loadConfigIfChanged();
@@ -244,10 +299,15 @@ function normalizeIncomingSettings(value) {
 }
 
 function validate(document) {
-  if (!isSourceFile(document.uri)) return;
   const context = getProjectContext(document.uri);
   const { locales } = loadLocalesForContext(context);
-  connection.sendDiagnostics({ uri: document.uri, diagnostics: getDiagnostics(document.getText(), locales) });
+  if (isSourceFile(document.uri)) {
+    connection.sendDiagnostics({ uri: document.uri, diagnostics: getDiagnostics(document.getText(), locales) });
+    return;
+  }
+  const locale = findLocaleForFile(locales, fileURLToPath(document.uri));
+  if (!locale) return;
+  connection.sendDiagnostics({ uri: document.uri, diagnostics: getLocaleParamDiagnostics(locale, fileURLToPath(document.uri), document.getText(), locales) });
 }
 function isSourceFile(uri) { return /\.(vue|tsx?|jsx?)$/i.test(uri); }
 

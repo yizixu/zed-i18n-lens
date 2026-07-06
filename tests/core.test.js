@@ -6,6 +6,8 @@ import {
   extractPlaceholders,
   getValueByKey,
   buildHoverMarkdown,
+  getLocaleParamConsistency,
+  getLocaleParamDiagnostics,
   getDiagnostics,
   getParamCodeActions,
   getCompletions,
@@ -19,6 +21,7 @@ import {
   getDefinitionLocaleOrder,
   collectLocaleWatchPaths,
   findJsonKeyLocation,
+  insertNestedJsonKey,
   findLocaleKeyTarget,
   collectLocaleKeyTargets,
   localeKeyAtPosition,
@@ -107,6 +110,53 @@ test('hover markdown escapes pipe characters so the table is not broken', () => 
   const locales = { 'zh-CN': { path: 'zh-CN.json', flat: { 'order.choice': '是 | 否' } } };
   const md = buildHoverMarkdown('order.choice', locales);
   assert.match(md, /是 \\\| 否/);
+});
+
+test('getLocaleParamConsistency flags keys whose params differ across locales', () => {
+  const locales = {
+    'en-US': { path: 'en-US.json', flat: { greeting: 'Hello {name}' } },
+    'zh-CN': { path: 'zh-CN.json', flat: { greeting: '你好' } },
+  };
+  const result = getLocaleParamConsistency('greeting', locales);
+  assert.equal(result.consistent, false);
+  assert.deepEqual(result.perLocale, [{ name: 'en-US', params: ['name'] }, { name: 'zh-CN', params: [] }]);
+});
+
+test('getLocaleParamConsistency treats matching params and single-locale keys as consistent', () => {
+  const locales = {
+    'en-US': { path: 'en-US.json', flat: { cart: 'You have {count}', solo: 'Only {x}' } },
+    'zh-CN': { path: 'zh-CN.json', flat: { cart: '共 {count} 件' } },
+  };
+  assert.equal(getLocaleParamConsistency('cart', locales).consistent, true);
+  assert.equal(getLocaleParamConsistency('solo', locales).consistent, true);
+});
+
+test('source diagnostics warn at the usage site when a key params differ across locales', () => {
+  const text = 't("greeting", { name })';
+  const locales = {
+    'en-US': { path: 'en-US.json', flat: { greeting: 'Hello {name}' } },
+    'zh-CN': { path: 'zh-CN.json', flat: { greeting: '你好' } },
+  };
+  const diagnostics = getDiagnostics(text, locales);
+  const inconsistency = diagnostics.find((d) => d.data?.paramInconsistency);
+  assert.ok(inconsistency, 'expected an inconsistency diagnostic at the call site');
+  assert.equal(inconsistency.data.key, 'greeting');
+  assert.deepEqual(inconsistency.range, { start: { line: 0, character: 3 }, end: { line: 0, character: 11 } });
+});
+
+test('getLocaleParamDiagnostics warns at the inconsistent key position, not the consistent one', () => {
+  const locales = {
+    'zh-CN': { path: '/repo/zh-CN.json', flat: { greeting: '你好', ok: '确定 {n}' }, files: ['/repo/zh-CN.json'] },
+    'en-US': { path: '/repo/en-US.json', flat: { greeting: 'Hello {name}', ok: 'OK {n}' }, files: ['/repo/en-US.json'] },
+  };
+  const text = '{\n  "greeting": "你好",\n  "ok": "确定 {n}"\n}\n';
+  const diagnostics = getLocaleParamDiagnostics(locales['zh-CN'], '/repo/zh-CN.json', text, locales);
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].severity, 2);
+  assert.equal(diagnostics[0].data.key, 'greeting');
+  assert.deepEqual(diagnostics[0].range.start, { line: 1, character: 2 });
+  assert.match(diagnostics[0].message, /en-US: \{name\}/);
+  assert.match(diagnostics[0].message, /zh-CN: \(none\)/);
 });
 
 test('diagnostics reports only keys missing from all locales as errors', () => {
@@ -200,6 +250,32 @@ test('param code actions add missing react-intl params', () => {
   assert.equal(text.slice(0, offset) + actions[0].edit.newText + text.slice(offset), 'formatMessage({ id: "user.greeting" }, { firstName, name })');
 });
 
+test('param code actions remove an unused param and keep the used ones', () => {
+  const text = 't("cart.items", { count, extra })';
+  const locales = { 'en-US': { path: 'en-US.json', flat: { 'cart.items': 'You have {count} items' } } };
+  const action = getParamCodeActions(text, getDiagnostics(text, locales)).find((a) => a.title.startsWith('Remove'));
+  assert.equal(action.title, 'Remove unused i18n params: extra');
+  const applied = text.slice(0, action.edit.range.start.character) + action.edit.newText + text.slice(action.edit.range.end.character);
+  assert.equal(applied, 't("cart.items", { count })');
+});
+
+test('param code actions collapse the object to {} when every param is unused', () => {
+  const text = 't("common.ok", { a, b })';
+  const locales = { 'en-US': { path: 'en-US.json', flat: { 'common.ok': 'OK' } } };
+  const action = getParamCodeActions(text, getDiagnostics(text, locales)).find((a) => a.title.startsWith('Remove'));
+  assert.equal(action.title, 'Remove unused i18n params: a, b');
+  const applied = text.slice(0, action.edit.range.start.character) + action.edit.newText + text.slice(action.edit.range.end.character);
+  assert.equal(applied, 't("common.ok", {})');
+});
+
+test('param code actions remove unused react-intl params', () => {
+  const text = 'formatMessage({ id: "user.greeting" }, { name, extra })';
+  const locales = { 'en-US': { path: 'en-US.json', flat: { 'user.greeting': 'Hello {name}' } } };
+  const action = getParamCodeActions(text, getDiagnostics(text, locales)).find((a) => a.title.startsWith('Remove'));
+  const applied = text.slice(0, action.edit.range.start.character) + action.edit.newText + text.slice(action.edit.range.end.character);
+  assert.equal(applied, 'formatMessage({ id: "user.greeting" }, { name })');
+});
+
 test('completion returns keys matching prefix with default locale detail', () => {
   const locales = { 'zh-CN': { path: 'zh-CN.json', flat: { 'order.pay_now': '立即支付', 'order.cancel': '取消订单', 'common.ok': '确定' } } };
   const items = getCompletions('order.', locales, 'zh-CN');
@@ -261,6 +337,32 @@ test('findJsonKeyLocation tolerates whitespace between key and colon', () => {
   const json = '{\n  "order" : {\n    "pay_now" : "立即支付"\n  }\n}\n';
   const loc = findJsonKeyLocation(json, 'order.pay_now');
   assert.deepEqual(loc, { line: 2, character: 4 });
+});
+
+test('insertNestedJsonKey appends a sibling into an existing object, preserving formatting', () => {
+  const json = '{\n  "order": {\n    "pay_now": "立即支付"\n  }\n}\n';
+  const out = insertNestedJsonKey(json, 'order.cancel', '');
+  assert.equal(out, '{\n  "order": {\n    "pay_now": "立即支付",\n    "cancel": ""\n  }\n}\n');
+  assert.deepEqual(JSON.parse(out), { order: { pay_now: '立即支付', cancel: '' } });
+});
+
+test('insertNestedJsonKey creates missing intermediate objects at the root', () => {
+  const json = '{\n  "order": {\n    "pay_now": "立即支付"\n  }\n}\n';
+  const out = insertNestedJsonKey(json, 'app.title', 'Hi');
+  assert.deepEqual(JSON.parse(out), { order: { pay_now: '立即支付' }, app: { title: 'Hi' } });
+  assert.match(out, /"app": \{\n {4}"title": "Hi"\n {2}\}/);
+});
+
+test('insertNestedJsonKey handles an empty object and detects the indent unit', () => {
+  assert.equal(insertNestedJsonKey('{}', 'a.b', ''), '{\n  "a": {\n    "b": ""\n  }\n}');
+  const fourSpace = '{\n    "order": {\n        "pay_now": "x"\n    }\n}\n';
+  const out = insertNestedJsonKey(fourSpace, 'order.cancel', '');
+  assert.match(out, /\n {8}"cancel": ""/);
+});
+
+test('insertNestedJsonKey returns undefined for existing keys or invalid JSON', () => {
+  assert.equal(insertNestedJsonKey('{\n  "a": 1\n}', 'a', ''), undefined);
+  assert.equal(insertNestedJsonKey('{ not json', 'a.b', ''), undefined);
 });
 
 test('findLocaleKeyTarget resolves keys inside prefixed locale directory files', () => {

@@ -619,16 +619,17 @@ $t('common.submit')
 - `v0.8.3`：缺失 params quick fix
 - `v0.9.0`：Zed settings 配置桥接（`lsp.i18n-lens.settings`）与发布文档整理
 - 反向跳转 / Find References：从 locale 文件（或源码用法）跳回代码所有使用处
+- Unused params quick fix：`Remove unused i18n params`（重建参数对象、保留在用参数）
+- Code Action 创建缺失 key：`insertNestedJsonKey` 纯函数 + 跨语言文件写入
+- 跨语言参数一致性诊断：locale 文件与源码使用处标记各语言占位符不一致的 key
 
 接下来建议优先做：
 
-1. **发布 `v0.9.0` 并同步 `zed-industries/extensions` PR**
-2. **Unused params quick fix**：提供 `Remove unused i18n params: total`
-3. **Code Action 创建缺失 key**：先做 `insertNestedJsonKey` 纯函数 + 测试地基
-4. **Hover params summary**：在 hover 中展示 required/provided/missing/unused params
-5. **Assistant slash command i18n report**：`/i18n-report`、`/i18n-missing`、`/i18n-unused`
-6. 项目级扫描报告（未使用 / 缺失 key），可与 slash command 共用扫描核心
-7. Rename 同步重命名 key（高风险，待 Code Action 稳定后）
+1. **发布 `v0.10.0`（及后续版本）并同步 `zed-industries/extensions` PR**
+2. **Assistant slash command i18n report**：`/i18n-report`、`/i18n-missing`、`/i18n-unused`
+3. 项目级扫描报告（未使用 / 缺失 key），可与 slash command 共用扫描核心
+4. 嵌套目录 / TS locale 的「创建缺失 key」支持（当前仅支持单文件 flat JSON）
+5. Rename 同步重命名 key（高风险，待 Code Action 稳定后）
 
 ---
 

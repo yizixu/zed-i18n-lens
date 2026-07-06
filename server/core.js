@@ -171,7 +171,8 @@ function collectFunctionCallKeys(text, found) {
     const end = start + key.length;
     const args = splitArgsWithOffsets(callText.slice(1, -1));
     const paramsEdit = getParamsEdit(args.slice(1), parenOffset + 1, parenOffset + callText.length - 1);
-    found.push({ key, range: makeRange(text, start, end), startOffset: start, endOffset: end, providedParams: collectParamNames(args.slice(1)), paramsEdit });
+    const paramsObject = extractParamsObject(args.slice(1), parenOffset + 1);
+    found.push({ key, range: makeRange(text, start, end), startOffset: start, endOffset: end, providedParams: collectParamNames(args.slice(1)), paramsEdit, paramsObject });
   }
 }
 
@@ -190,7 +191,8 @@ function collectFormatMessageKeys(text, found) {
     const start = parenOffset + 1 + idArg.indexOf(key);
     const end = start + key.length;
     const paramsEdit = getParamsEdit(args.slice(1), parenOffset + 1, parenOffset + callText.length - 1);
-    found.push({ key, range: makeRange(text, start, end), startOffset: start, endOffset: end, providedParams: collectParamNames(args.slice(1)), paramsEdit });
+    const paramsObject = extractParamsObject(args.slice(1), parenOffset + 1);
+    found.push({ key, range: makeRange(text, start, end), startOffset: start, endOffset: end, providedParams: collectParamNames(args.slice(1)), paramsEdit, paramsObject });
   }
 }
 
@@ -285,12 +287,29 @@ function collectParamNames(args) {
     if (!trimmed.startsWith('{')) continue;
     const body = trimmed.slice(1, trimmed.lastIndexOf('}'));
     for (const part of splitArgs(body)) {
-      const m = part.trim().match(/^(?:['"]([^'"]+)['"]|([A-Za-z_$][\w$]*))\s*(?::|$)/);
-      const name = m && (m[1] || m[2]);
-      if (name && !part.trim().startsWith('...')) params.add(name);
+      const name = paramNameOf(part);
+      if (name) params.add(name);
     }
   }
   return [...params].sort();
+}
+
+function paramNameOf(part) {
+  const trimmed = String(part).trim();
+  if (trimmed.startsWith('...')) return undefined;
+  const m = trimmed.match(/^(?:['"]([^'"]+)['"]|([A-Za-z_$][\w$]*))\s*(?::|$)/);
+  return (m && (m[1] || m[2])) || undefined;
+}
+
+// Absolute span of the params object literal plus each top-level property's raw
+// text, so a code action can rebuild the object with unused params removed.
+function extractParamsObject(args, argsStartOffset) {
+  const objectArg = args.find((arg) => arg.text.startsWith('{') && arg.text.lastIndexOf('}') > 0);
+  if (!objectArg) return undefined;
+  const start = argsStartOffset + objectArg.start;
+  const body = objectArg.text.slice(1, objectArg.text.lastIndexOf('}'));
+  const props = splitArgsWithOffsets(body).map((part) => ({ name: paramNameOf(part.text), text: part.text }));
+  return { start, end: start + objectArg.text.length, props };
 }
 
 export function keyAtPosition(text, position) {
@@ -392,7 +411,11 @@ export function getDiagnostics(text, locales) {
         data: { key: item.key, missingLocales, missingInAllLocales },
       });
     }
-    if (missingLocales.length !== localeEntries.length) diagnostics.push(...getParamDiagnostics(item, localeEntries));
+    if (missingLocales.length !== localeEntries.length) {
+      diagnostics.push(...getParamDiagnostics(item, localeEntries));
+      const consistency = getLocaleParamConsistency(item.key, locales);
+      if (!consistency.consistent) diagnostics.push(paramInconsistencyDiagnostic(item.key, item.range, consistency.perLocale));
+    }
     return diagnostics;
   });
 }
@@ -421,19 +444,87 @@ function collectRequiredParams(key, localeEntries) {
   return [...params].sort();
 }
 
+// Compare the interpolation placeholders a key uses across every locale that
+// defines it. `consistent` is false when two locales that both define the key
+// carry different param sets (a translation forgot or renamed a placeholder).
+// Locales that do not define the key are ignored — that is a missing-key concern.
+export function getLocaleParamConsistency(key, locales) {
+  const perLocale = [];
+  for (const [name, locale] of Object.entries(locales || {})) {
+    const value = locale.flat?.[key];
+    if (value === undefined) continue;
+    perLocale.push({ name, params: extractPlaceholders(value) });
+  }
+  const union = [...new Set(perLocale.flatMap((entry) => entry.params))].sort();
+  const consistent = perLocale.length < 2
+    || perLocale.every((entry) => entry.params.length === union.length && union.every((param) => entry.params.includes(param)));
+  return { consistent, perLocale, union };
+}
+
+// Warnings for keys defined in `locale`'s file whose params disagree with the
+// same key in other locales, anchored at each key's position in the file text.
+export function getLocaleParamDiagnostics(locale, filePath, text, locales) {
+  if (!locale?.flat) return [];
+  const isJson = /\.json$/i.test(filePath);
+  const diagnostics = [];
+  for (const key of Object.keys(locale.flat)) {
+    const consistency = getLocaleParamConsistency(key, locales);
+    if (consistency.consistent) continue;
+    const lookupKey = lookupKeyForLocaleFile(locale, filePath, key);
+    const position = isJson ? findJsonKeyLocation(text, lookupKey) : findLocaleKeyLocation(text, lookupKey);
+    if (!position) continue;
+    const leaf = lookupKey.split('.').at(-1);
+    const end = { line: position.line, character: position.character + leaf.length + (isJson ? 2 : 0) };
+    diagnostics.push(paramInconsistencyDiagnostic(key, { start: position, end }, consistency.perLocale));
+  }
+  return diagnostics;
+}
+
+function paramInconsistencyDiagnostic(key, range, perLocale) {
+  return {
+    severity: 2,
+    range,
+    message: 'i18n params for "' + key + '" differ across locales — ' + formatPerLocaleParams(perLocale),
+    source: 'i18n-lens',
+    data: { key, paramInconsistency: perLocale },
+  };
+}
+
+function formatPerLocaleParams(perLocale) {
+  return perLocale
+    .map((entry) => entry.name + ': ' + (entry.params.length ? entry.params.map((p) => '{' + p + '}').join(', ') : '(none)'))
+    .join('; ');
+}
+
 export function getParamCodeActions(text, diagnostics = []) {
   const items = extractI18nKeys(text);
   return diagnostics.flatMap((diagnostic) => {
-    const missingParams = diagnostic.data?.missingParams;
-    if (!Array.isArray(missingParams) || missingParams.length === 0) return [];
     const item = items.find((candidate) => candidate.key === diagnostic.data?.key && sameRange(candidate.range, diagnostic.range));
-    if (!item?.paramsEdit) return [];
-    const newText = item.paramsEdit.prefix + missingParams.join(', ') + (item.paramsEdit.suffix || '');
-    return [{
-      title: 'Add missing i18n params: ' + missingParams.join(', '),
-      diagnostic,
-      edit: { range: makeRange(text, item.paramsEdit.insertOffset, item.paramsEdit.insertOffset), newText },
-    }];
+
+    const missingParams = diagnostic.data?.missingParams;
+    if (Array.isArray(missingParams) && missingParams.length > 0) {
+      if (!item?.paramsEdit) return [];
+      const newText = item.paramsEdit.prefix + missingParams.join(', ') + (item.paramsEdit.suffix || '');
+      return [{
+        title: 'Add missing i18n params: ' + missingParams.join(', '),
+        diagnostic,
+        edit: { range: makeRange(text, item.paramsEdit.insertOffset, item.paramsEdit.insertOffset), newText },
+      }];
+    }
+
+    const unusedParams = diagnostic.data?.unusedParams;
+    if (Array.isArray(unusedParams) && unusedParams.length > 0) {
+      if (!item?.paramsObject) return [];
+      const kept = item.paramsObject.props.filter((prop) => !unusedParams.includes(prop.name));
+      const rebuilt = kept.length ? '{ ' + kept.map((prop) => prop.text).join(', ') + ' }' : '{}';
+      return [{
+        title: 'Remove unused i18n params: ' + unusedParams.join(', '),
+        diagnostic,
+        edit: { range: makeRange(text, item.paramsObject.start, item.paramsObject.end), newText: rebuilt },
+      }];
+    }
+
+    return [];
   });
 }
 
@@ -572,6 +663,85 @@ export function findJsonKeyLocation(jsonText, key) {
     if (part === parts[parts.length - 1]) return offsetToPosition(jsonText, match.index);
   }
   return undefined;
+}
+
+// Surgically insert a dotted `key` into a JSON document, creating intermediate
+// objects as needed and preserving the rest of the file's formatting. Returns
+// the new text, or undefined if the JSON is unparseable or the key already exists.
+export function insertNestedJsonKey(jsonText, key, value = '') {
+  let root;
+  try { root = JSON.parse(jsonText); } catch { return undefined; }
+  if (!root || typeof root !== 'object' || Array.isArray(root)) return undefined;
+  if (getValueByKey(root, key) !== undefined) return undefined;
+
+  const parts = key.split('.');
+  let node = root;
+  let existingDepth = 0;
+  for (; existingDepth < parts.length - 1; existingDepth++) {
+    const next = node[parts[existingDepth]];
+    if (next && typeof next === 'object' && !Array.isArray(next)) node = next;
+    else break;
+  }
+
+  const span = findJsonObjectSpan(jsonText, parts.slice(0, existingDepth));
+  if (!span) return undefined;
+
+  const unit = detectIndentUnit(jsonText);
+  const snippet = buildNestedProperty(parts.slice(existingDepth), value, unit.repeat(existingDepth + 1), unit);
+  const inner = jsonText.slice(span.openBrace + 1, span.contentEnd).trim();
+  if (inner.length === 0) {
+    return jsonText.slice(0, span.openBrace + 1) + '\n' + snippet + '\n' + unit.repeat(existingDepth) + jsonText.slice(span.closeBrace);
+  }
+  const needsComma = jsonText[span.contentEnd - 1] !== ',';
+  return jsonText.slice(0, span.contentEnd) + (needsComma ? ',' : '') + '\n' + snippet + jsonText.slice(span.contentEnd);
+}
+
+function findJsonObjectSpan(jsonText, pathParts) {
+  let searchFrom = 0;
+  if (pathParts.length) {
+    const pos = findJsonKeyLocation(jsonText, pathParts.join('.'));
+    if (!pos) return undefined;
+    const colon = jsonText.indexOf(':', positionToOffset(jsonText, pos));
+    if (colon === -1) return undefined;
+    searchFrom = colon + 1;
+  }
+  const openBrace = jsonText.indexOf('{', searchFrom);
+  if (openBrace === -1) return undefined;
+  const closeBrace = matchBrace(jsonText, openBrace);
+  if (closeBrace === -1) return undefined;
+  let contentEnd = closeBrace;
+  while (contentEnd > openBrace + 1 && /\s/.test(jsonText[contentEnd - 1])) contentEnd--;
+  return { openBrace, closeBrace, contentEnd };
+}
+
+function matchBrace(text, open) {
+  let depth = 0;
+  let quote = false;
+  let escaped = false;
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') quote = false;
+      continue;
+    }
+    if (ch === '"') quote = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+function detectIndentUnit(jsonText) {
+  const match = jsonText.match(/\n([ \t]+)\S/);
+  return match ? match[1] : '  ';
+}
+
+function buildNestedProperty(parts, value, indent, unit) {
+  const keyStr = JSON.stringify(parts[0]);
+  if (parts.length === 1) return indent + keyStr + ': ' + JSON.stringify(value);
+  return indent + keyStr + ': {\n' + buildNestedProperty(parts.slice(1), value, indent + unit, unit) + '\n' + indent + '}';
 }
 
 

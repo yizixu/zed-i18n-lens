@@ -7,8 +7,8 @@ Zed extension plus Language Server for Vue, TypeScript, TSX, JavaScript and JSX.
 - Inline translation display via LSP inlay hints
 - Detect `$t`/`t`/`tc`/`$tc`/`i18n.t` calls, `v-t="'key'"`, `v-t="{ path: 'key' }"`, `<i18n-t keypath="key">` (Vue I18n), `<Trans i18nKey="key">` (react-i18next), and `formatMessage({ id: "key" })` (react-intl)
 - Hover: show all locale values for a key
-- Diagnostics: report missing keys, missing locale entries, and mismatched interpolation params
-- Quick fixes: add missing interpolation params to supported i18n calls
+- Diagnostics: report missing keys, missing locale entries, mismatched interpolation params, and (on locale files) keys whose params differ across languages
+- Quick fixes: add missing / remove unused interpolation params on supported i18n calls, and create a missing key in every locale file that lacks it
 - Completion: suggest existing i18n keys with default locale text
 - Definition: jump from a source key to its locale definition; when several locales define the key, pick which language file to open
 - References: from a key in a locale file (or a source usage), find every place the key is used across the project's source code
