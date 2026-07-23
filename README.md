@@ -252,8 +252,8 @@ The published npm version can lag behind your working tree. To test local `serve
 ./scripts/deploy-local.ps1
 ```
 
-It runs `npm pack`, installs the tarball into `%LOCALAPPDATA%\Zed\extensions\work\i18n-lens\node_modules\i18n-lens-language-server` (the same layout Zed produces), then prompts you to run **restart language server** from the Zed command palette.
+It runs `npm pack`, installs the tarball into `%LOCALAPPDATA%\Zed\extensions\work\i18n-lens-language-server\node_modules\i18n-lens-language-server` (the same layout Zed produces), then prompts you to run **restart language server** from the Zed command palette.
 
-> To exercise the real install path instead, delete `%LOCALAPPDATA%\Zed\extensions\work\i18n-lens\node_modules` and restart the server — Zed will reinstall the published npm package.
+> To exercise the real install path instead, delete `%LOCALAPPDATA%\Zed\extensions\work\i18n-lens-language-server\node_modules` and restart the server — Zed will reinstall the published npm package.
 
 

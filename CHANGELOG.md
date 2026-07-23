@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows semantic versioning while it is developed locally.
 
+## [0.11.1] - 2026-07-23
+
+### Changed
+
+- Renamed the Zed extension id from `i18n-lens` to `i18n-lens-language-server` per the extension publishing prerequisites (extensions that only wrap a language server must suffix their id with `-lsp` or `-language-server`). The `[language_servers.i18n-lens]` id and the `lsp.i18n-lens.settings` namespace are unchanged.
+- Bumped extension/package/Cargo version from `0.11.0` to `0.11.1`.
+
 ## [0.11.0] - 2026-07-06
 
 ### Added

@@ -59,4 +59,4 @@ Use the `zed-extension-release` skill (`.agents/skills/zed-extension-release/SKI
 
 - Commit messages: Chinese, conventional-commit `type: subject` (e.g. `feat: ...`, `docs: ...`). Do **not** add a `Co-Authored-By: Claude` trailer in this repo.
 - Files use CRLF line endings; git may warn on LF→CRLF — expected, not an error.
-- The extension id is `i18n-lens` (Zed) and the npm package is `i18n-lens-language-server`; only the internal Cargo crate/repo may contain `zed` (Zed publishing rule forbids it in the extension/package names).
+- The extension id is `i18n-lens-language-server` (Zed, suffixed per the extension publishing prerequisites since this extension only wraps a language server) and the npm package is also `i18n-lens-language-server`; only the internal Cargo crate/repo may contain `zed` (Zed publishing rule forbids it in the extension/package names). The `[language_servers.i18n-lens]` key in `extension.toml` and the `lsp.i18n-lens.settings` namespace are a separate, shorter id and are unaffected by this.

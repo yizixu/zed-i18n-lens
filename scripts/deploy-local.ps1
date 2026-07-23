@@ -17,14 +17,14 @@
   (with a .ts / .vue / .tsx / .js / .jsx file focused).
 
 .PARAMETER ExtensionId
-  Zed extension id (the folder name under extensions\work). Defaults to i18n-lens.
+  Zed extension id (the folder name under extensions\work). Defaults to i18n-lens-language-server.
 
 .EXAMPLE
   ./scripts/deploy-local.ps1
 #>
 [CmdletBinding()]
 param(
-  [string]$ExtensionId = 'i18n-lens'
+  [string]$ExtensionId = 'i18n-lens-language-server'
 )
 
 $ErrorActionPreference = 'Stop'
