@@ -27,6 +27,9 @@ import {
   didWatchedFileChange,
   collectLocaleWatchPaths,
   resolveProjectContext,
+  getExtractCodeActions,
+  resolvePreferredLocale,
+  getInlineCodeActions,
 } from './core.js';
 
 const connection = createConnection(ProposedFeatures.all);
@@ -187,6 +190,13 @@ connection.onCodeAction((params) => {
     }
   }
   actions.push(...getCreateKeyActions(diagnostics, getProjectContext(params.textDocument.uri)));
+  if (clientSupportsDocumentChanges && doc && !isLocaleFileUri(doc.uri)) {
+    // A refactor failure must not discard existing quick fixes or its sibling action.
+    try { actions.push(...getExtractActions(doc, params, diagnostics)); }
+    catch (error) { connection.console.error(`Extract failed for ${doc.uri}: ${error.message}`); }
+    try { actions.push(...getInlineActions(doc, params)); }
+    catch (error) { connection.console.error(`Inline failed for ${doc.uri}: ${error.message}`); }
+  }
   return actions;
 });
 
@@ -220,14 +230,41 @@ function getCreateKeyActions(diagnostics, context) {
   return actions;
 }
 
-// Namespace routing follows loaded file prefixes. Index-owned prefixes and
+function getExtractActions(doc, params, diagnostics) {
+  const language = /\.vue$/i.test(doc.uri) ? 'vue' : /\.html?$/i.test(doc.uri) || doc.languageId === 'html' ? 'html' : undefined;
+  if (!language) return [];
+  const context = getProjectContext(doc.uri);
+  const { locales, localeTexts } = loadLocalesForContext(context);
+  const locale = resolvePreferredLocale(locales, context.config.defaultLocale);
+  if (!locale) return [];
+  return getExtractCodeActions(doc.getText(), language, fileURLToPath(doc.uri), params.range, diagnostics, locale.flat).flatMap((action) => {
+    const plan = planKeyInsertion(action.key, locale, locales, localeTexts, action.value);
+    if (!plan || (plan.create && !clientSupportsCreateFile)) return [];
+    const documentChanges = [];
+    if (plan.create) documentChanges.push(CreateFile.create(plan.uri));
+    documentChanges.push(TextDocumentEdit.create({ uri: plan.uri, version: plan.version }, [minimalTextEdit(plan.text, plan.newText)]));
+    documentChanges.push(TextDocumentEdit.create({ uri: doc.uri, version: doc.version }, [action.edit]));
+    return [{ title: action.title, kind: CodeActionKind.QuickFix, diagnostics: [action.diagnostic], edit: { documentChanges } }];
+  });
+}
+
+function getInlineActions(doc, params) {
+  const { locales } = loadLocalesForContext(getProjectContext(doc.uri));
+  return getInlineCodeActions(doc.getText(), params.range, locales).map((action) => ({
+    title: action.title,
+    kind: CodeActionKind.RefactorInline,
+    edit: { documentChanges: [TextDocumentEdit.create({ uri: doc.uri, version: doc.version }, [action.edit])] },
+  }));
+}
+
+// Namespace routing follows loaded file stems. Index-owned prefixes and
 // overlapping layouts are not guessed; ambiguous targets disable the action.
-function planKeyInsertion(key, locale, locales, localeTexts) {
+function planKeyInsertion(key, locale, locales, localeTexts, value = '') {
   if (!locale) return undefined;
   if (!locale.directories?.length) {
     const files = locale.files || [];
     return files.length === 1 && /\.json$/i.test(files[0])
-      ? insertInto(files[0], key) : undefined;
+      ? insertInto(files[0], key, value) : undefined;
   }
   if (locale.directories.length !== 1 || locale.topLevelFiles?.length) return undefined;
   const directory = locale.directories[0];
@@ -252,9 +289,9 @@ function planKeyInsertion(key, locale, locales, localeTexts) {
     const stem = namespaceFiles[0];
     const files = targets.get(stem);
     return files.length === 1 && /\.json$/i.test(files[0])
-      ? insertInto(files[0], key.slice(stem.length + 1)) : undefined;
+      ? insertInto(files[0], key.slice(stem.length + 1), value) : undefined;
   }
-  if (indexOwnsPrefix) return insertInto(indexFile, key);
+  if (indexOwnsPrefix) return insertInto(indexFile, key, value);
 
   const siblingStems = new Map();
   for (const sibling of Object.values(locales)) {
@@ -275,9 +312,9 @@ function planKeyInsertion(key, locale, locales, localeTexts) {
     if (relativePaths.size !== 1) return undefined;
     const targetPath = path.join(directory, [...relativePaths][0]);
     return fs.existsSync(path.dirname(targetPath))
-      ? insertOrCreate(targetPath, key.slice(stem.length + 1)) : undefined;
+      ? insertOrCreate(targetPath, key.slice(stem.length + 1), value) : undefined;
   }
-  return indexFile ? insertInto(indexFile, key) : undefined;
+  return indexFile ? insertInto(indexFile, key, value) : undefined;
 }
 
 function filesByPrefix(locale) {
@@ -290,7 +327,7 @@ function filesByPrefix(locale) {
   return prefixes;
 }
 
-function insertInto(filePath, lookupKey) {
+function insertInto(filePath, lookupKey, value = '') {
   if (!lookupKey) return undefined;
   const text = openDocumentText(filePath) ?? readFileSafe(filePath);
   if (text === undefined) return undefined;
@@ -298,7 +335,7 @@ function insertInto(filePath, lookupKey) {
   // an empty object (matching its line-ending style) so the fix still lands
   // instead of silently disappearing.
   const source = text.trim() ? text : (text.includes('\r\n') ? '{}\r\n' : '{}\n');
-  const newText = insertNestedJsonKey(source, lookupKey, '');
+  const newText = insertNestedJsonKey(source, lookupKey, value);
   if (newText === undefined) return undefined;
   return toEditPlan(filePath, text, newText, false);
 }
@@ -306,17 +343,17 @@ function insertInto(filePath, lookupKey) {
 // Prefer an in-place insert when the file exists or is open as a buffer (the
 // file may have been deleted on disk while its document stays alive); fall
 // back to a CreateFile only when there is truly nothing to edit.
-function insertOrCreate(filePath, lookupKey) {
-  if (fs.existsSync(filePath) || openDocument(filePath)) return insertInto(filePath, lookupKey);
-  return createIn(filePath, lookupKey);
+function insertOrCreate(filePath, lookupKey, value = '') {
+  if (fs.existsSync(filePath) || openDocument(filePath)) return insertInto(filePath, lookupKey, value);
+  return createIn(filePath, lookupKey, value);
 }
 
 // Create a missing namespace JSON file: only ever proposed with a CreateFile
 // operation ahead of the text edit, and only when the file truly does not
 // exist — never as a fallback guess.
-function createIn(filePath, lookupKey) {
+function createIn(filePath, lookupKey, value = '') {
   if (!lookupKey || fs.existsSync(filePath) || openDocument(filePath)) return undefined;
-  const newText = insertNestedJsonKey('{}\n', lookupKey, '');
+  const newText = insertNestedJsonKey('{}\n', lookupKey, value);
   if (newText === undefined) return undefined;
   return toEditPlan(filePath, '', newText, true);
 }

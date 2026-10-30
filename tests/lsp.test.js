@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import { parseDocument, DomUtils } from 'htmlparser2';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs/promises';
@@ -23,6 +25,7 @@ async function startServer(t, files, settings = {}, workspaceEdit = { documentCh
   const closed = once(child, 'close');
   const pending = new Map();
   const diagnostics = new Map();
+  const logs = [];
   const waiters = new Set();
   let initializedRefresh;
   const ready = new Promise((resolve) => { initializedRefresh = resolve; });
@@ -53,6 +56,8 @@ async function startServer(t, files, settings = {}, workspaceEdit = { documentCh
         pending.delete(message.id);
         if (message.error) entry.reject(new Error(JSON.stringify(message.error)));
         else entry.resolve(message.result);
+      } else if (message.method === 'window/logMessage') {
+        logs.push(message.params);
       } else if (message.method === 'textDocument/publishDiagnostics') {
         diagnostics.set(message.params.uri, message.params.diagnostics);
         for (const check of [...waiters]) check(message.params.uri, message.params.diagnostics);
@@ -120,7 +125,7 @@ async function startServer(t, files, settings = {}, workspaceEdit = { documentCh
     initializationOptions: { defaultLocale: 'en', ...settings },
   });
   send({ method: 'initialized', params: {} });
-  return { root, uri, call, open, change, configure, sync, send, diagnostics, actions, nextDiagnostics, ready };
+  return { root, uri, call, open, change, configure, sync, send, diagnostics, actions, nextDiagnostics, ready, logs };
 }
 
 function documentEdits(action) {
@@ -765,4 +770,85 @@ test('fileless intermediate directories stay watched as locales appear and disap
       }
     });
   }
+});
+
+test('extract action writes the default locale and rewrites the template', async (t) => {
+  const s = await startServer(t, { 'locales/en.json': '{\n  "known": "Known"\n}\n' }, { rawTextDiagnostics: true });
+  const source = '<template><p>Hello world</p><b>{{ $t(\'known\') }}</b></template>';
+  const pending = s.nextDiagnostics('src/Home.vue', (items) => items.some((item) => item.code === 'raw-text'));
+  await s.open('src/Home.vue', source);
+  await pending;
+  const all = await s.actions('src/Home.vue');
+  const action = all.find((a) => a.title.startsWith('Extract'));
+  assert.equal(action.title, 'Extract to i18n key "Home.hello_world"');
+  const [locale, doc] = documentEdits(action);
+  assert.equal(applyText('{\n  "known": "Known"\n}\n', locale), '{\n  "known": "Known",\n  "Home": {\n    "hello_world": "Hello world"\n  }\n}\n');
+  assert.equal(applyText(source, doc), '<template><p>{{ $t(\'Home.hello_world\') }}</p><b>{{ $t(\'known\') }}</b></template>');
+  const inline = await s.call('textDocument/codeAction', 'src/Home.vue', { range: { start: { line: 0, character: 38 }, end: { line: 0, character: 38 } }, context: { diagnostics: [] } });
+  assert.deepEqual(inline.map((a) => a.title), ['Inline i18n key "known" as en']);
+  assert.equal(applyText(source, documentEdits(inline[0])[0]), '<template><p>Hello world</p><b>Known</b></template>');
+});
+
+test('inline attribute action preserves unsaved locale text through HTML and JS escaping', async (t) => {
+  const source = `<template><img :alt="t('greet')" data-keep="unchanged"></template>`;
+  const diskLocale = '{"greet":"Disk"}';
+  const value = 'Hello {name}, say "hi" &quot; \\path\nNext line';
+  const s = await startServer(t, { 'locales/en.json': diskLocale, 'src/App.vue': source });
+  await s.open('locales/en.json', JSON.stringify({ greet: value }), 4);
+  await s.open('src/App.vue', source, 7);
+  const caret = { line: 0, character: source.indexOf('greet') + 1 };
+  const actions = await s.call('textDocument/codeAction', 'src/App.vue', {
+    range: { start: caret, end: caret }, context: { diagnostics: [] },
+  });
+  const action = actions.find((item) => item.title === 'Inline i18n key "greet" as en');
+  assert.ok(action);
+  const edits = documentEdits(action);
+  assert.equal(edits.length, 1, 'inline edits only the source, not the locale');
+  assert.deepEqual(edits[0].textDocument, { uri: s.uri('src/App.vue'), version: 7 });
+  const updated = applyText(source, edits[0]);
+  const image = DomUtils.findOne((node) => node.name === 'img', parseDocument(updated).children, true);
+  assert.deepEqual(Object.keys(image.attribs).sort(), [':alt', 'data-keep']);
+  assert.equal(image.attribs['data-keep'], 'unchanged');
+  assert.equal(vm.runInNewContext(image.attribs[':alt'], {}, { timeout: 1000 }), value);
+  assert.equal(await fs.readFile(path.join(s.root, 'locales/en.json'), 'utf8'), diskLocale);
+});
+
+test('an Extract exception preserves other code actions and subsequent language requests', { timeout: 15000 }, async (t) => {
+  const locale = '{"known":"Known"}';
+  const source = '<template>' + '<div>'.repeat(6000) + 'Hello World' + '</div>'.repeat(6000) + "{{ t('missing') }}</template>";
+  const s = await startServer(t, { 'locales/en.json': locale, 'Deep.vue': source, 'other.ts': "t('known')" });
+  await s.open('Deep.vue', source);
+  const actions = await s.actions('Deep.vue');
+  assert.ok(actions.some((a) => a.title.startsWith('Create i18n key')));
+  assert.equal(actions.some((a) => a.title.startsWith('Extract')), false);
+  assert.ok(s.logs.some((log) => log.type === 1 && log.message.includes('Extract') && log.message.includes(s.uri('Deep.vue'))));
+  await s.open('other.ts', "t('known')");
+  assert.match((await s.sync('other.ts')).contents.value, /Known/);
+  assert.equal((await s.call('textDocument/definition', 'other.ts', { position }))[0].uri, s.uri('locales/en.json'));
+  assert.equal((await s.call('textDocument/inlayHint', 'other.ts', { range }))[0].label, 'Known');
+  assert.equal(await fs.readFile(path.join(s.root, 'locales/en.json'), 'utf8'), locale);
+  assert.equal(await fs.readFile(path.join(s.root, 'Deep.vue'), 'utf8'), source);
+});
+
+test('Extract refuses malformed locale text and recovers without changing any disk files', async (t) => {
+  const source = '<template><p>Hello world</p></template>';
+  const s = await startServer(t, { 'locales/en.json': '{}', 'Home.vue': source, 'other.ts': "t('known')" });
+  await s.open('Home.vue', source, 3);
+  await s.open('locales/en.json', '{"broken":', 4);
+  const caret = { line: 0, character: source.indexOf('Hello') + 1 };
+  const getActions = () => s.call('textDocument/codeAction', 'Home.vue', { range: { start: caret, end: caret }, context: { diagnostics: [] } });
+  assert.deepEqual(await getActions(), []);
+  await s.change('locales/en.json', '{"known":"Recovered","unsaved":"Keep"}', 5);
+  const action = (await getActions()).find((a) => a.title.startsWith('Extract'));
+  assert.ok(action);
+  const edits = documentEdits(action);
+  assert.deepEqual(edits.map((e) => e.textDocument.version), [5, 3]);
+  const localeEdit = edits.find((e) => e.textDocument.uri === s.uri('locales/en.json'));
+  assert.deepEqual(JSON.parse(applyText('{"known":"Recovered","unsaved":"Keep"}', localeEdit)), {
+    known: 'Recovered', unsaved: 'Keep', Home: { hello_world: 'Hello world' },
+  });
+  await s.open('other.ts', "t('known')");
+  assert.match((await s.sync('other.ts')).contents.value, /Recovered/);
+  assert.equal(await fs.readFile(path.join(s.root, 'locales/en.json'), 'utf8'), '{}');
+  assert.equal(await fs.readFile(path.join(s.root, 'Home.vue'), 'utf8'), source);
 });
