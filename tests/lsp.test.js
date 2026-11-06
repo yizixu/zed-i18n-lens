@@ -813,12 +813,14 @@ test('inline attribute action preserves unsaved locale text through HTML and JS 
   assert.equal(await fs.readFile(path.join(s.root, 'locales/en.json'), 'utf8'), diskLocale);
 });
 
-test('inline semicolonless assignments preserve locale text over stdio', async (t) => {
+test('inline in source files preserves locale text over stdio', async (t) => {
   const value = 'A &amp; B\r\nIt\'s "quoted" \\path </script>';
   const locale = JSON.stringify({ greet: value });
   const sources = {
     'src/app.js': "const label = t('greet')\nconst keep = 'same'",
     'src/app.ts': "const label: string = t('greet')\nconst keep = 'same'",
+    'src/generic.ts': "const cache = new Map<string, string>()\nconst label = t('greet')\nconst keep = 'same'",
+    'src/View.tsx': "const a = 1, b = 2\nexport const View = () => <p title={t('greet')}>{a<b}</p>",
     'src/App.vue': "<template><p>Keep me</p></template>\n<script setup>const label = t('greet')\nconst keep = 'same'</script>",
     'src/page.html': "<script>const label = t('greet')\nconst keep = 'same'</script>",
   };

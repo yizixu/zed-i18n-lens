@@ -921,7 +921,7 @@ export function getExtractCodeActions(text, language, filePath, range, diagnosti
 
 const VOID_ELEMENTS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
 
-/** Lightweight tag-stack scan: returns closed elements { tag, start, end, attrs }. */
+/** Lightweight tag-stack scan: returns elements { tag, start, end, attrs, openEnd }; void/self-closing ones span only their opening tag. */
 function scanElements(text, opaque = computeOpaqueRanges(text).ranges) {
   const elements = [];
   const stack = [];
@@ -963,32 +963,21 @@ function scanElements(text, opaque = computeOpaqueRanges(text).ranges) {
   return elements;
 }
 
+/** Template-only (Vue/HTML) location of `offset`: 'openTag' | 'script' | 'text' | 'code'. */
 function markupFrame(text, offset) {
   const opaque = computeOpaqueRanges(text).ranges;
   const el = scanElements(text, opaque)
     .filter((e) => e.start <= offset && offset < e.end)
     .sort((a, b) => (a.end - a.start) - (b.end - b.start))[0];
   if (el) {
-    if (el.tag === 'script' || el.tag === 'style') return 'script';
-    return offset < el.openEnd ? 'openTag' : 'text';
+    if (offset < el.openEnd) return 'openTag';
+    return el.tag === 'script' || el.tag === 'style' ? 'script' : 'text';
   }
   const before = text.slice(0, offset);
   const lastLt = before.lastIndexOf('<');
   const lastGt = before.lastIndexOf('>');
   if (lastLt > lastGt && /^[A-Za-z]/.test(before.slice(lastLt + 1)) && !isOpaque(opaque, lastLt)) return 'openTag';
   return 'code';
-}
-
-function jsxAttributeContext(text, start, end) {
-  if (markupFrame(text, start) !== 'openTag') return null;
-  const before = text.slice(0, start);
-  const after = text.slice(end);
-  const m = /(?:^|[\s<])([\w-]+)\s*=\s*\{\s*$/.exec(before);
-  const close = /^\s*\}/.exec(after);
-  if (!m || !close) return null;
-  const attrStart = start - m[0].length + m[0].search(/\S/);
-  const attrEnd = end + close[0].length;
-  return { name: m[1], attrStart, attrEnd };
 }
 
 function commonKeyPrefix(keys) {
@@ -1102,31 +1091,31 @@ function uniqueKey(base, flat) {
 
 /**
  * "Inline as <locale>": replace a param-less t('key') call with locale text.
+ * `language` is 'vue' | 'html' for template documents; anything else is
+ * JS/TS/JSX/TSX source, where angle brackets (generics, comparisons, JSX)
+ * cannot be told apart lexically, so only the call becomes a JS string literal.
  */
-export function getInlineCodeActions(text, range, locales = {}) {
+export function getInlineCodeActions(text, language, range, locales = {}) {
+  const isTemplate = language === 'vue' || language === 'html';
   const offset = positionToOffset(text, range.start);
   const endOffset = positionToOffset(text, range.end || range.start);
   // Cursor (or selection) must sit inside the call; a whole-file range offers nothing.
-  const item = extractI18nKeys(text, { includeStaticAttrCalls: true }).find((c) => c.call && offset >= c.call.start && endOffset <= c.call.end);
+  const item = extractI18nKeys(text, { includeStaticAttrCalls: isTemplate }).find((c) => c.call && offset >= c.call.start && endOffset <= c.call.end);
   if (!item || item.call.argCount !== 1) return [];
   const { start, end, quote } = item.call;
   const before = text.slice(0, start);
   const after = text.slice(end);
-  const interp = /\{\{\s*$/.exec(before);
-  const interpEnd = /^\s*\}\}/.exec(after);
-  const frame = markupFrame(text, start);
-  // Assignment syntax alone is not evidence of an HTML attribute. In code
-  // (including <script>) or markup text, replace only the call itself.
+  const frame = isTemplate ? markupFrame(text, start) : 'code';
+  // Assignment syntax alone is not evidence of an HTML attribute; only an
+  // opening tag can hold one. Script/code and markup text replace the call.
   const attr = frame === 'openTag' && attributeLiteralContext(text, start, end);
   if (frame === 'openTag' && !attr) {
     const openAttr = /(?:^|[\s>])(?:(?::|v-bind:)?[\w-]+)\s*=\s*(["'])(?:(?!\1)[\s\S])*$/.exec(before);
     if (openAttr && after.includes(openAttr[1])) return [];
   }
-  const jsxAttr = !attr && jsxAttributeContext(text, start, end);
-  const jsxOpen = /\{\s*$/.exec(before);
-  const jsxClose = /^\s*\}/.exec(after);
-  const jsxChild = !attr && !jsxAttr && frame === 'text' && jsxOpen && jsxClose;
-  const htmlText = !attr && !jsxAttr && !jsxChild && frame === 'text' && !/\{[^{]*$/.test(before);
+  const interp = frame === 'text' && /\{\{\s*$/.exec(before);
+  const interpEnd = frame === 'text' && /^\s*\}\}/.exec(after);
+  const htmlText = !attr && frame === 'text' && !/\{[^{]*$/.test(before);
   return Object.entries(locales).flatMap(([name, locale]) => {
     const value = locale?.flat?.[item.key];
     if (typeof value !== 'string') return [];
@@ -1152,15 +1141,6 @@ export function getInlineCodeActions(text, range, locales = {}) {
         boundLiteral = `${attr.name}="${escapeHtml(value)}"`;
       }
       edit = { range: makeRange(text, attr.attrStart, attr.attrEnd), newText: boundLiteral };
-    } else if (jsxAttr) {
-      edit = { range: makeRange(text, jsxAttr.attrStart, jsxAttr.attrEnd), newText: `${jsxAttr.name}="${escapeHtml(value)}"` };
-    } else if (jsxChild) {
-      // `{++counter}` or `Hello {name}` must stay a string, not a JSX expression.
-      if (/[{}]/.test(value)) {
-        edit = { range: makeRange(text, start, end), newText: escapeJsString(value, quote) };
-      } else {
-        edit = { range: makeRange(text, start - jsxOpen[0].length, end + jsxClose[0].length), newText: escapeHtml(value) };
-      }
     } else if (htmlText) {
       edit = { range: makeRange(text, start, end), newText: escapeHtml(value) };
     } else {
