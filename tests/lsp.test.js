@@ -106,8 +106,8 @@ async function startServer(t, files, settings = {}, workspaceEdit = { documentCh
     if (/\.html?$/i.test(name)) return 'html';
     return 'typescript';
   }
-  async function open(name, text, version = 1) {
-    send({ method: 'textDocument/didOpen', params: { textDocument: { uri: uri(name), languageId: languageId(name), version, text } } });
+  async function open(name, text, version = 1, id = languageId(name)) {
+    send({ method: 'textDocument/didOpen', params: { textDocument: { uri: uri(name), languageId: id, version, text } } });
     await sync(name);
   }
   function configure(settings) {
@@ -848,6 +848,28 @@ test('inline in source files preserves locale text over stdio', async (t) => {
     assert.equal(await fs.readFile(path.join(s.root, name), 'utf8'), source, 'server does not write source files itself');
   }
   assert.equal(await fs.readFile(path.join(s.root, 'locales/en.json'), 'utf8'), locale);
+});
+
+test('inline follows the declared template language and skips JSX text over stdio', async (t) => {
+  const value = 'Say "hi" <now> &amp;';
+  const s = await startServer(t, { 'locales/en.json': JSON.stringify({ greet: value }) });
+  const cases = [
+    ['src/Card.custom', 'vue', `<template><img :alt="t('greet')" data-keep="same"></template>`, `<template><img alt="Say &quot;hi&quot; &lt;now&gt; &amp;amp;" data-keep="same"></template>`],
+    ['src/page.tpl', 'html', `{{ t('greet') }}`, 'Say &quot;hi&quot; &lt;now&gt; &amp;amp;'],
+    ['src/View.tsx', 'typescriptreact', `export const el = <p>t('greet')</p>`, null],
+  ];
+  for (const [name, id, source, expected] of cases) {
+    await s.open(name, source, 1, id);
+    const caret = TextDocument.create(s.uri(name), id, 1, source).positionAt(source.indexOf('greet') + 1);
+    const actions = await s.call('textDocument/codeAction', name, { range: { start: caret, end: caret }, context: { diagnostics: [] } });
+    const action = actions.find((item) => item.title === 'Inline i18n key "greet" as en');
+    if (expected === null) {
+      assert.equal(action, undefined, name);
+    } else {
+      assert.ok(action, name);
+      assert.equal(applyText(source, documentEdits(action)[0]), expected, name);
+    }
+  }
 });
 
 test('an Extract exception preserves other code actions and subsequent language requests', { timeout: 15000 }, async (t) => {

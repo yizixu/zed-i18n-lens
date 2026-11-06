@@ -231,8 +231,17 @@ function getCreateKeyActions(diagnostics, context) {
 }
 
 function templateLanguageOf(doc) {
-  if (/\.vue$/i.test(doc.uri)) return 'vue';
+  if (/\.vue$/i.test(doc.uri) || doc.languageId === 'vue') return 'vue';
   return /\.html?$/i.test(doc.uri) || doc.languageId === 'html' ? 'html' : undefined;
+}
+
+// Parser dialect for Inline in non-template documents; the extension wins over languageId.
+function sourceLanguageOf(doc) {
+  if (/\.tsx$/i.test(doc.uri)) return 'typescriptreact';
+  if (/\.[cm]?ts$/i.test(doc.uri)) return 'typescript';
+  if (/\.[cm]?jsx?$/i.test(doc.uri)) return 'javascript';
+  if (doc.languageId === 'typescriptreact' || doc.languageId === 'tsx') return 'typescriptreact';
+  return doc.languageId === 'typescript' ? 'typescript' : 'javascript';
 }
 
 function getExtractActions(doc, params, diagnostics) {
@@ -255,7 +264,8 @@ function getExtractActions(doc, params, diagnostics) {
 
 function getInlineActions(doc, params) {
   const { locales } = loadLocalesForContext(getProjectContext(doc.uri));
-  return getInlineCodeActions(doc.getText(), templateLanguageOf(doc), params.range, locales).map((action) => ({
+  const language = templateLanguageOf(doc) || sourceLanguageOf(doc);
+  return getInlineCodeActions(doc.getText(), language, params.range, locales).map((action) => ({
     title: action.title,
     kind: CodeActionKind.RefactorInline,
     edit: { documentChanges: [TextDocumentEdit.create({ uri: doc.uri, version: doc.version }, [action.edit])] },

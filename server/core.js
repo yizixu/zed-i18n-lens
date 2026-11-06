@@ -1,4 +1,5 @@
 import { parseDocument, DomUtils } from 'htmlparser2';
+import { parse as parseScript } from '@babel/parser';
 
 export const DEFAULT_CONFIG = Object.freeze({
   defaultLocale: 'zh-CN',
@@ -963,9 +964,34 @@ function scanElements(text, opaque = computeOpaqueRanges(text).ranges) {
   return elements;
 }
 
-/** Template-only (Vue/HTML) location of `offset`: 'openTag' | 'script' | 'text' | 'code'. */
-function markupFrame(text, offset) {
+// Whole `{{ … }}` expressions are opaque to the template tag scan: regexes or
+// comparisons such as `{{ /<script>/.test(x) }}` are code, not markup.
+function templateOpaqueRanges(text) {
   const opaque = computeOpaqueRanges(text).ranges;
+  const ranges = [...opaque];
+  let i = 0;
+  while ((i = text.indexOf('{{', i)) >= 0) {
+    if (isOpaque(opaque, i)) { i += 2; continue; }
+    let close = i + 2;
+    while ((close = text.indexOf('}}', close)) >= 0 && isOpaque(opaque, close)) close += 2;
+    if (close < 0) break;
+    ranges.push({ start: i, end: close + 2 });
+    i = close + 2;
+  }
+  // isOpaque's binary search needs disjoint ranges.
+  ranges.sort((a, b) => a.start - b.start);
+  const merged = [];
+  for (const r of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && r.start <= last.end) last.end = Math.max(last.end, r.end);
+    else merged.push({ ...r });
+  }
+  return merged;
+}
+
+/** Template-only (Vue/HTML) location of `offset`: 'openTag' | 'script' | 'text'. */
+function markupFrame(text, offset) {
+  const opaque = templateOpaqueRanges(text);
   const el = scanElements(text, opaque)
     .filter((e) => e.start <= offset && offset < e.end)
     .sort((a, b) => (a.end - a.start) - (b.end - b.start))[0];
@@ -977,7 +1003,49 @@ function markupFrame(text, offset) {
   const lastLt = before.lastIndexOf('<');
   const lastGt = before.lastIndexOf('>');
   if (lastLt > lastGt && /^[A-Za-z]/.test(before.slice(lastLt + 1)) && !isOpaque(opaque, lastLt)) return 'openTag';
-  return 'code';
+  // Outside every element of an HTML/Vue document is top-level markup text.
+  return 'text';
+}
+
+const SOURCE_PARSER_PLUGINS = {
+  typescript: ['typescript'],
+  typescriptreact: ['typescript', 'jsx'],
+  javascript: ['jsx'],
+};
+
+/**
+ * True only when [start, end) is a real CallExpression in JS/TS/JSX/TSX
+ * source. Lexing cannot tell generics, comparisons, JSX text and code apart;
+ * a parse failure offers nothing rather than risking a broken edit.
+ */
+function isSourceCallExpression(text, language, start, end) {
+  let ast;
+  try {
+    ast = parseScript(text, {
+      sourceType: 'unambiguous',
+      plugins: SOURCE_PARSER_PLUGINS[language] || SOURCE_PARSER_PLUGINS.javascript,
+      errorRecovery: true,
+      allowReturnOutsideFunction: true,
+      allowAwaitOutsideFunction: true,
+      allowImportExportEverywhere: true,
+    });
+  } catch {
+    return false;
+  }
+  let node = ast.program;
+  while (node) {
+    if (node.type === 'CallExpression' && node.start === start && node.end === end) return true;
+    let next = null;
+    for (const key of Object.keys(node)) {
+      if (key === 'loc' || key === 'leadingComments' || key === 'trailingComments' || key === 'innerComments') continue;
+      for (const child of [].concat(node[key])) {
+        if (child && typeof child.type === 'string' && child.start <= start && end <= child.end) { next = child; break; }
+      }
+      if (next) break;
+    }
+    node = next;
+  }
+  return false;
 }
 
 function commonKeyPrefix(keys) {
@@ -1091,9 +1159,9 @@ function uniqueKey(base, flat) {
 
 /**
  * "Inline as <locale>": replace a param-less t('key') call with locale text.
- * `language` is 'vue' | 'html' for template documents; anything else is
- * JS/TS/JSX/TSX source, where angle brackets (generics, comparisons, JSX)
- * cannot be told apart lexically, so only the call becomes a JS string literal.
+ * `language` is 'vue' | 'html' for template documents, otherwise
+ * 'typescript' | 'typescriptreact' | 'javascript' (JSX enabled). Source files
+ * only inline real call expressions, replaced by a JS string literal.
  */
 export function getInlineCodeActions(text, language, range, locales = {}) {
   const isTemplate = language === 'vue' || language === 'html';
@@ -1103,6 +1171,7 @@ export function getInlineCodeActions(text, language, range, locales = {}) {
   const item = extractI18nKeys(text, { includeStaticAttrCalls: isTemplate }).find((c) => c.call && offset >= c.call.start && endOffset <= c.call.end);
   if (!item || item.call.argCount !== 1) return [];
   const { start, end, quote } = item.call;
+  if (!isTemplate && !isSourceCallExpression(text, language, start, end)) return [];
   const before = text.slice(0, start);
   const after = text.slice(end);
   const frame = isTemplate ? markupFrame(text, start) : 'code';

@@ -165,13 +165,22 @@ test('inline JSX children and attributes stay JS string expressions', () => {
     assert.equal(apply(text, en.edit), expected);
   }
   const braces = `<p>{t('greet')}</p>`;
-  const [expr] = getInlineCodeActions(braces, 'javascriptreact', at(braces, 't('), { en: { flat: { greet: '{++counter}' } } });
+  const [expr] = getInlineCodeActions(braces, 'javascript', at(braces, 't('), { en: { flat: { greet: '{++counter}' } } });
   assert.equal(apply(braces, expr.edit), `<p>{'{++counter}'}</p>`);
 });
 
-test('JSX static attribute text is not an inline target', () => {
-  const text = `const el = <img title="t('greet')" />`;
-  assert.deepEqual(getInlineCodeActions(text, 'typescriptreact', at(text, 'greet'), locales), []);
+test('JSX text and static attribute look-alikes are not inline targets', () => {
+  const sources = [
+    `const el = <img title="t('greet')" />`,
+    `const el = <p>t('greet')</p>`,
+    `const el = <p>Hello t('greet')</p>`,
+    `const el = <p>{a} t('greet')</p>`,
+    `const el = <p>\n  Note: t('greet')\n</p>`,
+  ];
+  for (const text of sources) {
+    assert.deepEqual(getInlineCodeActions(text, 'typescriptreact', at(text, 'greet'), locales), [], text);
+    assert.deepEqual(getInlineCodeActions(text, 'javascript', at(text, 'greet'), locales), [], text);
+  }
 });
 
 test('inline JS assignments inside HTML and Vue scripts stay string literals', () => {
@@ -220,6 +229,27 @@ test('inline Vue attributes after a string containing a tag stay attributes', ()
   const text = `<template><p>{{ '<script>' }}</p><img :alt="t('greet')"></template>`;
   const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), locales);
   assert.equal(apply(text, action.edit), `<template><p>{{ '<script>' }}</p><img alt="Say &quot;hi&quot; &lt;now&gt;"></template>`);
+});
+
+test('inline Vue attributes after tag-like interpolation expressions stay attributes', () => {
+  for (const expression of ['/<script>/.test(markup)', '/<style>/.test(markup)', 'a<script>b', 'a<style>b']) {
+    const text = `<template><p>{{ ${expression} }}</p><img :alt="t('greet')" data-keep="same"></template>`;
+    const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), locales);
+    assert.ok(action, expression);
+    assert.equal(apply(text, action.edit), `<template><p>{{ ${expression} }}</p><img alt="Say &quot;hi&quot; &lt;now&gt;" data-keep="same"></template>`);
+  }
+});
+
+test('inline HTML top-level text and interpolation outside any element', () => {
+  const interp = `{{ t('greet') }}`;
+  const [a] = getInlineCodeActions(interp, 'html', at(interp, 'greet'), locales);
+  assert.equal(apply(interp, a.edit), 'Say &quot;hi&quot; &lt;now&gt;');
+  const plain = `Hello t('greet')!`;
+  const [b] = getInlineCodeActions(plain, 'html', at(plain, 'greet'), locales);
+  assert.equal(apply(plain, b.edit), 'Hello Say &quot;hi&quot; &lt;now&gt;!');
+  const afterScript = `<script>var x = 1</script>\n{{ t('greet') }}`;
+  const [c] = getInlineCodeActions(afterScript, 'html', at(afterScript, 'greet'), locales);
+  assert.equal(apply(afterScript, c.edit), '<script>var x = 1</script>\nSay &quot;hi&quot; &lt;now&gt;');
 });
 
 test('inline attributes on a script opening tag use HTML escaping', () => {
