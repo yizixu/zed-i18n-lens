@@ -14,9 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- Extract avoids occupied key paths, including ancestor leaves, without unbounded suffix searches for an impossible prefix. Inline preserves string literals where required and withholds actions for partial attribute expressions.
+- Extract avoids occupied key paths, including ancestor leaves, without unbounded suffix searches for an impossible prefix. Inline adds string-literal handling for braces in Vue/JSX text and withholds actions for partial attribute expressions.
 - Extract and Inline failures are isolated from existing quick fixes and subsequent language requests. Multi-file edits still depend on the client's application and failure-handling behavior; rollback on permission errors is not guaranteed.
 - Documented Extract/Inline usage and limitations. Rename remains separate and is tracked in [issue #2](https://github.com/yizixu/zed-i18n-lens/issues/2); Extract/Inline was contributed in [PR #4](https://github.com/yizixu/zed-i18n-lens/pull/4).
+- Known release blocker: Inline can mistake a semicolonless JS/TS assignment for an HTML attribute, changing entity text or producing an invalid multiline string. Context detection and regression tests must be fixed before publishing `0.15.0`.
 - Bumped extension/package/Cargo version from `0.14.0` to `0.15.0`.
 
 ## [0.14.0] - 2026-10-27
