@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { parseDocument, DomUtils } from 'htmlparser2';
 import { TextDocument } from 'vscode-languageserver-textdocument';
+import { parse as parseVue } from '@vue/compiler-dom';
 import { getExtractCodeActions, getInlineCodeActions, getRawTextDiagnostics } from '../server/core.js';
 
 function apply(text, edit) {
@@ -82,11 +83,11 @@ test('extract offers selected raw text even without diagnostics', () => {
 });
 
 const locales = { en: { flat: { greet: 'Say "hi" <now>', it: "it's" } }, zh: { flat: { greet: '你好' } } };
-const at = (text, needle) => { const p = { line: 0, character: text.indexOf(needle) + 1 }; return { start: p, end: p }; };
+const at = (text, needle) => { const p = TextDocument.create('file:///x', 'vue', 0, text).positionAt(text.indexOf(needle) + 1); return { start: p, end: p }; };
 
 test('inline template interpolation as plain text per locale', () => {
   const text = `<template><p>{{ $t('greet') }}</p></template>`;
-  const actions = getInlineCodeActions(text, at(text, '$t'), locales);
+  const actions = getInlineCodeActions(text, 'vue', at(text, '$t'), locales);
   assert.deepEqual(actions.map((a) => a.title), ['Inline i18n key "greet" as en', 'Inline i18n key "greet" as zh']);
   assert.equal(apply(text, actions[0].edit), '<template><p>Say &quot;hi&quot; &lt;now&gt;</p></template>');
   assert.equal(apply(text, actions[1].edit), '<template><p>你好</p></template>');
@@ -94,63 +95,281 @@ test('inline template interpolation as plain text per locale', () => {
 
 test('inline bound attribute becomes a plain attribute', () => {
   const text = `<template><img :alt="$t('greet')"></template>`;
-  const [en] = getInlineCodeActions(text, at(text, 'greet'), locales);
+  const [en] = getInlineCodeActions(text, 'vue', at(text, 'greet'), locales);
   assert.equal(apply(text, en.edit), '<template><img alt="Say &quot;hi&quot; &lt;now&gt;"></template>');
 });
 
 test('inline JS call becomes a quoted string literal', () => {
   const text = "const a = t('it');";
-  const actions = getInlineCodeActions(text, at(text, 't('), locales);
+  const actions = getInlineCodeActions(text, 'javascript', at(text, 't('), locales);
   assert.equal(actions.length, 1);
   assert.equal(apply(text, actions[0].edit), "const a = 'it\\'s';");
 });
 
+test('inline semicolonless JS assignments preserve the exact locale string', () => {
+  const sources = [
+    "const label = t('greet')",
+    'const label = t("greet")\nconst following = "unchanged"',
+    "let label\nlabel = i18n.t('greet')\n",
+    "const markup = '<input title=';\nconst label = t('greet')",
+  ];
+  const values = ['A &amp; B', 'First\nSecond', 'It\'s "quoted" \\path\r\nNext <tag> {name}'];
+  for (const text of sources) {
+    for (const value of values) {
+      const [action] = getInlineCodeActions(text, 'javascript', at(text, 'greet'), { en: { flat: { greet: value } } });
+      assert.ok(action, text);
+      const updated = apply(text, action.edit);
+      assert.equal(updated, text.replace(/(?:i18n\.)?t\((['"])greet\1\)/, () => action.edit.newText), 'only the call is replaced');
+      assert.equal(vm.runInNewContext(updated + '\nlabel', {}, { timeout: 1000 }), value, updated);
+    }
+  }
+});
+
+test('inline typed TS assignments change only the call expression', () => {
+  const text = "const label: string = t('greet')\nconst following = 1";
+  const value = 'A &amp; B\n"quoted"';
+  const [action] = getInlineCodeActions(text, 'typescript', at(text, 'greet'), { en: { flat: { greet: value } } });
+  assert.ok(action);
+  assert.equal(apply(text, action.edit), text.replace("t('greet')", () => action.edit.newText));
+  assert.equal(vm.runInNewContext(action.edit.newText, {}, { timeout: 1000 }), value);
+});
+
+test('inline JS/TS/JSX source ignores angle brackets and replaces only the call', () => {
+  const value = 'A &amp; B\n"q" it\'s </script>';
+  const sources = [
+    "let a = 1, b = 2, label\nif (a<b) label = t('greet')",
+    "const a = 1, b = 2\nconst c = a<b\nconst label = t('greet')",
+    "const m = new Map<string, string>()\nconst label = t('greet')",
+    "const ref = useRef<HTMLElement>(null)\nconst label = String(t('greet'))",
+    "const onClick = () => { label = t('greet') }\nlet label\nonClick()",
+  ];
+  for (const text of sources) {
+    const [action] = getInlineCodeActions(text, 'typescript', at(text, 'greet'), { en: { flat: { greet: value } } });
+    assert.ok(action, text);
+    const updated = apply(text, action.edit);
+    assert.equal(updated, text.replace("t('greet')", () => action.edit.newText), 'only the call is replaced');
+    const js = updated.replace(/<string, string>|<HTMLElement>/, '');
+    assert.equal(vm.runInNewContext(js + '\nlabel', { Map, String, useRef: () => ({}) }, { timeout: 1000 }), value, updated);
+  }
+});
+
+test('inline JSX children and attributes stay JS string expressions', () => {
+  const cases = [
+    [`const el = <h1>{t('greet')}</h1>`, `const el = <h1>{'Say "hi" <now>'}</h1>`],
+    [`const el = <h1>{ t('greet') }</h1>`, `const el = <h1>{ 'Say "hi" <now>' }</h1>`],
+    [`const el = <img title={t('greet')} />`, `const el = <img title={'Say "hi" <now>'} />`],
+    [`const el = <p>{a<b && t('greet')}</p>`, `const el = <p>{a<b && 'Say "hi" <now>'}</p>`],
+    [`const el = <h1>{t('it') + extra}</h1>`, `const el = <h1>{'it\\'s' + extra}</h1>`],
+  ];
+  for (const [text, expected] of cases) {
+    const [en] = getInlineCodeActions(text, 'typescriptreact', at(text, 't('), locales);
+    assert.equal(apply(text, en.edit), expected);
+  }
+  const braces = `<p>{t('greet')}</p>`;
+  const [expr] = getInlineCodeActions(braces, 'javascript', at(braces, 't('), { en: { flat: { greet: '{++counter}' } } });
+  assert.equal(apply(braces, expr.edit), `<p>{'{++counter}'}</p>`);
+});
+
+test('JSX text and static attribute look-alikes are not inline targets', () => {
+  const sources = [
+    `const el = <img title="t('greet')" />`,
+    `const el = <p>t('greet')</p>`,
+    `const el = <p>Hello t('greet')</p>`,
+    `const el = <p>{a} t('greet')</p>`,
+    `const el = <p>\n  Note: t('greet')\n</p>`,
+  ];
+  for (const text of sources) {
+    assert.deepEqual(getInlineCodeActions(text, 'typescriptreact', at(text, 'greet'), locales), [], text);
+    assert.deepEqual(getInlineCodeActions(text, 'javascript', at(text, 'greet'), locales), [], text);
+  }
+});
+
+test('decorators elsewhere in a TS file do not disable inline', () => {
+  const sources = [
+    "@sealed\nclass View { label() { return t('greet'); } }",
+    "class View { constructor(@inject foo: string) {} label() { return t('greet'); } }",
+    "@sealed class View { accessor name = ''; label = t('greet'); }",
+    "export @sealed class View { label = t('greet'); }",
+  ];
+  for (const text of sources) {
+    for (const language of ['typescript', 'typescriptreact']) {
+      const [action] = getInlineCodeActions(text, language, at(text, 'greet'), locales);
+      assert.ok(action, `${language}: ${text}`);
+      assert.equal(apply(text, action.edit), text.replace("t('greet')", `'Say "hi" <now>'`));
+    }
+  }
+});
+
+test('inline JS assignments inside HTML and Vue scripts stay string literals', () => {
+  const sources = [
+    "<script>const label = t('greet')\n</script>",
+    "<template><p>Keep me</p></template>\n<script setup>const label = t('greet')\n</script>",
+  ];
+  const value = 'A &amp; B\n</script><img> "quoted"';
+  for (const text of sources) {
+    const [action] = getInlineCodeActions(text, text.includes('<template>') ? 'vue' : 'html', at(text, 'greet'), { en: { flat: { greet: value } } });
+    assert.ok(action);
+    const updated = apply(text, action.edit);
+    assert.equal(updated, text.replace("t('greet')", () => action.edit.newText));
+    const script = /<script[^>]*>([\s\S]*?)<\/script>/.exec(updated)[1];
+    assert.equal(vm.runInNewContext(script + '\nlabel', {}, { timeout: 1000 }), value);
+  }
+});
+
+test('inline assignment-like markup text does not become an attribute', () => {
+  const text = "<template><p>label = t('greet')\n</p></template>";
+  const value = 'A &amp; B\nNext';
+  const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), { en: { flat: { greet: value } } });
+  assert.ok(action);
+  const updated = apply(text, action.edit);
+  assert.equal(updated, text.replace("t('greet')", () => action.edit.newText));
+  assert.equal(DomUtils.textContent(parseDocument(updated)), 'label = ' + value + '\n');
+});
+
+test('inline retains attributes on nested void and self-closing elements', () => {
+  const sources = [
+    '<template><img data-before="x > y" :alt="t(\'greet\')"></template>',
+    '<template><Card data-before="x > y" :title="t(\'greet\')" /></template>',
+    '<template><img title=t(\'greet\') data-keep="same"></template>',
+  ];
+  const value = 'A &amp; B "quoted"';
+  for (const text of sources) {
+    const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), { en: { flat: { greet: value } } });
+    assert.ok(action, text);
+    const element = DomUtils.findOne((node) => ['img', 'card'].includes(node.name), parseDocument(apply(text, action.edit), { recognizeSelfClosing: true }).children, true);
+    assert.equal(element.attribs.alt ?? element.attribs.title, value);
+    assert.equal(element.attribs['data-before'] ?? element.attribs['data-keep'], text.includes('data-before') ? 'x > y' : 'same');
+  }
+});
+
+test('inline Vue attributes after a string containing a tag stay attributes', () => {
+  const text = `<template><p>{{ '<script>' }}</p><img :alt="t('greet')"></template>`;
+  const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), locales);
+  assert.equal(apply(text, action.edit), `<template><p>{{ '<script>' }}</p><img alt="Say &quot;hi&quot; &lt;now&gt;"></template>`);
+});
+
+test('inline Vue attributes after tag-like interpolation expressions stay attributes', () => {
+  for (const expression of ['/<script>/.test(markup)', '/<style>/.test(markup)', 'a<script>b', 'a<style>b']) {
+    const text = `<template><p>{{ ${expression} }}</p><img :alt="t('greet')" data-keep="same"></template>`;
+    const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), locales);
+    assert.ok(action, expression);
+    assert.equal(apply(text, action.edit), `<template><p>{{ ${expression} }}</p><img alt="Say &quot;hi&quot; &lt;now&gt;" data-keep="same"></template>`);
+  }
+});
+
+test('braces in Vue script, style and directive values do not hide later attributes', () => {
+  const sources = [
+    `<script>const open = /{{/;</script><template><img :alt="t('greet')" data-keep="same">{{ count }}</template>`,
+    `<style>a { background: url({{.png) }</style><template><img :alt="t('greet')" data-keep="same">{{ count }}</template>`,
+    `<template><button @click="() => {{ foo(); } }">x</button><img :alt="t('greet')" data-keep="same">{{ count }}</template>`,
+  ];
+  for (const text of sources) {
+    const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), locales);
+    assert.ok(action, text);
+    assert.equal(apply(text, action.edit), text.replace(`:alt="t('greet')"`, 'alt="Say &quot;hi&quot; &lt;now&gt;"'));
+  }
+});
+
+test('inline offers nothing while a tag or interpolation is still open', () => {
+  const sources = [
+    ['vue', `<template><img :alt="t('greet')"`],
+    ['html', `<div><img :alt="t('greet')"`],
+    ['vue', `<template><p>{{ /<script>/.test(x)</p><img :alt="t('greet')"></template>`],
+  ];
+  for (const [language, text] of sources) {
+    assert.deepEqual(getInlineCodeActions(text, language, at(text, 'greet'), locales), [], text);
+  }
+});
+
+test('inline inside a larger Vue interpolation round-trips entities and quotes', () => {
+  const value = 'A &amp; B "q" <now>';
+  const text = `<template><p>{{ t('greet') + suffix }}</p></template>`;
+  const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), { en: { flat: { greet: value } } });
+  const updated = apply(text, action.edit);
+  const interpolation = parseVue(updated, { parseMode: 'sfc' }).children[0].children[0].children[0];
+  assert.equal(vm.runInNewContext(interpolation.content.content, { suffix: '' }, { timeout: 1000 }), value, updated);
+});
+
+test('inline Vue text keeps interpolation delimiters in translations literal', () => {
+  const text = `<template><p>Hello t('greet')</p></template>`;
+  const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), { en: { flat: { greet: '{{ secret }}' } } });
+  const p = parseVue(apply(text, action.edit), { parseMode: 'sfc' }).children[0].children[0];
+  assert.deepEqual(p.children.map((node) => node.type), [2], 'single text node, no interpolation');
+  assert.equal(p.children[0].content, 'Hello {{ secret }}');
+});
+
+test('inline skips calls in style blocks and custom SFC blocks', () => {
+  const sources = [
+    `<template><p>x</p></template><style>.a::after { content: t('greet') }</style>`,
+    `<template><p>x</p></template><docs>Use t('greet') here</docs>`,
+  ];
+  for (const text of sources) assert.deepEqual(getInlineCodeActions(text, 'vue', at(text, 'greet'), locales), [], text);
+});
+
+test('inline HTML top-level text and interpolation outside any element', () => {
+  const interp = `{{ t('greet') }}`;
+  const [a] = getInlineCodeActions(interp, 'html', at(interp, 'greet'), locales);
+  assert.equal(apply(interp, a.edit), 'Say &quot;hi&quot; &lt;now&gt;');
+  const plain = `Hello t('greet')!`;
+  const [b] = getInlineCodeActions(plain, 'html', at(plain, 'greet'), locales);
+  assert.equal(apply(plain, b.edit), 'Hello Say &quot;hi&quot; &lt;now&gt;!');
+  const afterScript = `<script>var x = 1</script>\n{{ t('greet') }}`;
+  const [c] = getInlineCodeActions(afterScript, 'html', at(afterScript, 'greet'), locales);
+  assert.equal(apply(afterScript, c.edit), '<script>var x = 1</script>\nSay &quot;hi&quot; &lt;now&gt;');
+});
+
+test('inline attributes on a script opening tag use HTML escaping', () => {
+  const text = `<script data-label="t('greet')">var x = 1</script>`;
+  const [action] = getInlineCodeActions(text, 'html', at(text, 'greet'), locales);
+  assert.equal(apply(text, action.edit), `<script data-label="Say &quot;hi&quot; &lt;now&gt;">var x = 1</script>`);
+});
+
 test('inline JS does not treat tags inside string literals as HTML context', () => {
   const text = "const html = '<p>'; const label = t('greet');";
-  const [en] = getInlineCodeActions(text, at(text, "t('"), { en: { flat: { greet: 'Hello' } } });
+  const [en] = getInlineCodeActions(text, 'javascript', at(text, "t('"), { en: { flat: { greet: 'Hello' } } });
   assert.equal(apply(text, en.edit), "const html = '<p>'; const label = 'Hello';");
 });
 
 test('inline JS inside HTML script breaks </script> in the generated string', () => {
   const text = `<script>const label = t('greet');</script>`;
-  const [en] = getInlineCodeActions(text, at(text, 't('), { en: { flat: { greet: 'Hello</script><img>' } } });
+  const [en] = getInlineCodeActions(text, 'html', at(text, 't('), { en: { flat: { greet: 'Hello</script><img>' } } });
   assert.equal(apply(text, en.edit), `<script>const label = 'Hello<\\/script><img>';</script>`);
   const mixed = `<script>const label = t('greet');</script>`;
-  const [upper] = getInlineCodeActions(mixed, at(mixed, 't('), { en: { flat: { greet: '</SCRIPT>' } } });
+  const [upper] = getInlineCodeActions(mixed, 'html', at(mixed, 't('), { en: { flat: { greet: '</SCRIPT>' } } });
   assert.equal(apply(mixed, upper.edit), `<script>const label = '<\\/SCRIPT>';</script>`);
 });
 
 test('inline skips calls with params or outside a call', () => {
   const text = "t('greet', { n: 1 }); x";
-  assert.deepEqual(getInlineCodeActions(text, at(text, 'greet'), locales), []);
-  assert.deepEqual(getInlineCodeActions(text, { start: { line: 0, character: text.length } }, locales), []);
+  assert.deepEqual(getInlineCodeActions(text, 'javascript', at(text, 'greet'), locales), []);
+  assert.deepEqual(getInlineCodeActions(text, 'javascript', { start: { line: 0, character: text.length } }, locales), []);
 });
 
 test('inline skips partial attribute expressions', () => {
   const text = `<template><div :title="$t('greet') + ' suffix'"></div></template>`;
-  assert.deepEqual(getInlineCodeActions(text, at(text, 'greet'), locales), []);
+  assert.deepEqual(getInlineCodeActions(text, 'vue', at(text, 'greet'), locales), []);
 });
 
 test('inline works for t() inside element that has unrelated attributes', () => {
   const text = `<template><h2 class="x">{{ t('greet') }}</h2></template>`;
-  const actions = getInlineCodeActions(text, at(text, 't('), locales);
+  const actions = getInlineCodeActions(text, 'vue', at(text, 't('), locales);
   assert.equal(actions.length, 2);
   assert.match(actions[0].title, /Inline i18n key "greet"/);
 });
 
 test('inline escapes quotes when rewriting bound attribute values', () => {
   const text = `<template><div :aria-label="$t('greet')"></div></template>`;
-  const [action] = getInlineCodeActions(text, at(text, 'greet'), locales);
+  const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), locales);
   assert.equal(apply(text, action.edit), '<template><div aria-label="Say &quot;hi&quot; &lt;now&gt;"></div></template>');
 });
 
 test('inline HTML text node replaces the call with raw locale text', () => {
   const text = `<p>$t('greet')</p>`;
-  const actions = getInlineCodeActions(text, at(text, '$t'), locales);
+  const actions = getInlineCodeActions(text, 'html', at(text, '$t'), locales);
   assert.equal(apply(text, actions[0].edit), '<p>Say &quot;hi&quot; &lt;now&gt;</p>');
   assert.equal(apply(text, actions[1].edit), '<p>你好</p>');
   const mixed = `<p>Hello $t('it')!</p>`;
-  const [en] = getInlineCodeActions(mixed, at(mixed, '$t'), { en: { flat: { it: 'LiG' } } });
+  const [en] = getInlineCodeActions(mixed, 'html', at(mixed, '$t'), { en: { flat: { it: 'LiG' } } });
   assert.equal(apply(mixed, en.edit), '<p>Hello LiG!</p>');
 });
 
@@ -158,19 +377,19 @@ test('HTML attribute $t is inlined, not extracted', () => {
   const text = `<a title="$t('greet')">x</a>`;
   const range = at(text, '$t');
   assert.deepEqual(getExtractCodeActions(text, 'html', '/page.html', range, [], {}), []);
-  const [en] = getInlineCodeActions(text, range, locales);
+  const [en] = getInlineCodeActions(text, 'html', range, locales);
   assert.equal(apply(text, en.edit), '<a title="Say &quot;hi&quot; &lt;now&gt;">x</a>');
   const tc = `<img alt="$tc('greet')">`;
-  assert.equal(apply(tc, getInlineCodeActions(tc, at(tc, '$tc'), locales)[0].edit), '<img alt="Say &quot;hi&quot; &lt;now&gt;">');
+  assert.equal(apply(tc, getInlineCodeActions(tc, 'html', at(tc, '$tc'), locales)[0].edit), '<img alt="Say &quot;hi&quot; &lt;now&gt;">');
   const i18nT = `<img alt="i18n.t('greet')">`;
-  assert.equal(apply(i18nT, getInlineCodeActions(i18nT, at(i18nT, 'i18n.t'), locales)[0].edit), '<img alt="Say &quot;hi&quot; &lt;now&gt;">');
-  const jsx = `<img title="t('greet')" />`;
-  assert.equal(apply(jsx, getInlineCodeActions(jsx, at(jsx, 't('), locales)[0].edit), '<img title="Say &quot;hi&quot; &lt;now&gt;" />');
+  assert.equal(apply(i18nT, getInlineCodeActions(i18nT, 'html', at(i18nT, 'i18n.t'), locales)[0].edit), '<img alt="Say &quot;hi&quot; &lt;now&gt;">');
+  const selfClosing = `<img title="t('greet')" />`;
+  assert.equal(apply(selfClosing, getInlineCodeActions(selfClosing, 'html', at(selfClosing, 't('), locales)[0].edit), '<img title="Say &quot;hi&quot; &lt;now&gt;" />');
 });
 
 test('inline skips partial HTML attribute expressions', () => {
   const text = `<a title="$t('greet') + 'x'">x</a>`;
-  assert.deepEqual(getInlineCodeActions(text, at(text, 'greet'), locales), []);
+  assert.deepEqual(getInlineCodeActions(text, 'html', at(text, 'greet'), locales), []);
 });
 
 test('extract still rewrites ordinary HTML attributes', () => {
@@ -179,36 +398,123 @@ test('extract still rewrites ordinary HTML attributes', () => {
   assert.deepEqual(actions.map((a) => a.value).sort(), ['Hello world', 'Save']);
 });
 
-test('inline JSX text child unwraps braces', () => {
-  const text = `<h1>{t('greet')}</h1>`;
-  const [en] = getInlineCodeActions(text, at(text, 't('), locales);
-  assert.equal(apply(text, en.edit), '<h1>Say &quot;hi&quot; &lt;now&gt;</h1>');
-  const padded = `<h1>{ t('it') }</h1>`;
-  const [it] = getInlineCodeActions(padded, at(padded, 't('), { en: { flat: { it: 'LiG' } } });
-  assert.equal(apply(padded, it.edit), '<h1>LiG</h1>');
-});
-
-test('inline JSX text child keeps braces when the translation contains {', () => {
-  const text = `<p>{t('greet')}</p>`;
-  const [expr] = getInlineCodeActions(text, at(text, 't('), { en: { flat: { greet: '{++counter}' } } });
-  assert.equal(apply(text, expr.edit), `<p>{'{++counter}'}</p>`);
-  const [interp] = getInlineCodeActions(text, at(text, 't('), { en: { flat: { greet: 'Hello {name}' } } });
-  assert.equal(apply(text, interp.edit), `<p>{'Hello {name}'}</p>`);
-});
-
-test('inline Vue interpolation keeps mustache when the translation contains {', () => {
+test('inline Vue interpolation keeps a JS string when the translation contains braces', () => {
   const text = `<template><p>{{ t('greet') }}</p></template>`;
-  const [expr] = getInlineCodeActions(text, at(text, 't('), { en: { flat: { greet: '{++counter}' } } });
-  assert.equal(apply(text, expr.edit), `<template><p>{{ '{++counter}' }}</p></template>`);
-  const [interp] = getInlineCodeActions(text, at(text, 't('), { en: { flat: { greet: 'Hello {name}' } } });
-  assert.equal(apply(text, interp.edit), `<template><p>{{ 'Hello {name}' }}</p></template>`);
-  const [mustache] = getInlineCodeActions(text, at(text, 't('), { en: { flat: { greet: '{{ test }}' } } });
-  assert.equal(apply(text, mustache.edit), `<template><p>{{ '{{ test }}' }}</p></template>`);
+  for (const value of ['{++counter}', 'Hello {name}', '{{ test }}', 'a }} b &amp; "q"']) {
+    const [action] = getInlineCodeActions(text, 'vue', at(text, 't('), { en: { flat: { greet: value } } });
+    const p = parseVue(apply(text, action.edit), { parseMode: 'sfc' }).children[0].children[0];
+    assert.deepEqual(p.children.map((node) => node.type), [5], value);
+    const context = { counter: 0 };
+    assert.equal(vm.runInNewContext(p.children[0].content.content, context, { timeout: 1000 }), value);
+    assert.equal(context.counter, 0);
+  }
+});
+
+test('inline judges Vue expressions after entity decoding', () => {
+  for (const expression of [`a &lt; b ? t('greet') : ''`, `a &amp;&amp; t('greet')`]) {
+    const text = `<template><p>{{ ${expression} }}</p></template>`;
+    const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), { en: { flat: { greet: 'A &amp; "B"' } } });
+    assert.ok(action, expression);
+    const p = parseVue(apply(text, action.edit), { parseMode: 'sfc' }).children[0].children[0];
+    assert.equal(vm.runInNewContext(p.children[0].content.content, { a: 1, b: 2 }, { timeout: 1000 }), 'A &amp; "B"', expression);
+  }
+});
+
+test('inline HTML scripts follow their MIME type, case-insensitively', () => {
+  const value = '&apos; + secret + &apos;';
+  for (const open of ['<script type="text/x-template">', '<script TYPE="Text/X-Template">', '<SCRIPT type="text/x-template">']) {
+    for (const body of [`{{ t('greet') }}`, `<p>{{ t('greet') }}</p>`]) {
+      const text = `${open}${body}</script>`;
+      const [action] = getInlineCodeActions(text, 'html', at(text, 'greet'), { en: { flat: { greet: value } } });
+      assert.ok(action, text);
+      const template = /<script[^>]*>([\s\S]*)<\/script>/i.exec(apply(text, action.edit))[1];
+      const textOf = (node) => (node.type === 2 ? node.content : (node.children || []).map(textOf).join(''));
+      assert.equal(textOf(parseVue(template, { parseMode: 'html' })), value, template);
+    }
+  }
+  const plain = `<script type="text/plain">t('greet')</script>`;
+  assert.deepEqual(getInlineCodeActions(plain, 'html', at(plain, 'greet'), locales), []);
+  for (const [open, close] of [['<script type="module">', '</script>'], ['<SCRIPT>', '</SCRIPT>'], ['<Script>', '</script>']]) {
+    const text = `${open}const label = t('greet')${close}`;
+    const [js] = getInlineCodeActions(text, 'html', at(text, 'greet'), locales);
+    assert.ok(js, open);
+    const body = apply(text, js.edit).slice(open.length, -close.length);
+    assert.equal(vm.runInNewContext(body + '\nlabel', {}, { timeout: 1000 }), 'Say "hi" <now>', open);
+  }
+});
+
+test('inline JS strings inside interpolations carry no markup characters', () => {
+  // Browser Vue re-decodes an expression containing `&`, and in-DOM templates
+  // parse `<` as tags, so the inserted literal must avoid both.
+  const value = 'Say "hi" <b> & {{x}} \'q\'';
+  const text = `<script type="text/x-template"><p>{{ a<b ? t('greet') : '' }}</p></script>`;
+  const [action] = getInlineCodeActions(text, 'html', at(text, 'greet'), { en: { flat: { greet: value } } });
+  assert.doesNotMatch(action.edit.newText.slice(1, -1), /[&<>"{}]/);
+  assert.equal(vm.runInNewContext(action.edit.newText, {}, { timeout: 1000 }), value);
+  assert.equal(apply(text, action.edit), text.replace("t('greet')", () => action.edit.newText));
+});
+
+test('inline offers nothing inside CDATA sections only', () => {
+  for (const text of [`<template><svg><![CDATA[t('greet')]]></svg></template>`, `<template><svg>a<![CDATA[t('greet')]]>b</svg></template>`]) {
+    assert.deepEqual(getInlineCodeActions(text, 'vue', at(text, 'greet'), locales), [], text);
+  }
+  for (const text of [`<template><p title="<![CDATA[">t('greet')]]></p></template>`, `<template><svg><![CDATA[x]]>t('greet')</svg></template>`, `<template><!-- <![CDATA[ --><p>t('greet')</p></template>`, `<template><textarea><![CDATA[t('greet')]]></textarea></template>`]) {
+    const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), locales);
+    assert.ok(action, text);
+    assert.equal(apply(text, action.edit), text.replace("t('greet')", 'Say &quot;hi&quot; &lt;now&gt;'));
+  }
+});
+
+test('inline leaves HTML bindings with uppercase directive names alone', () => {
+  for (const text of [`<div V-BIND:TITLE="t('greet')"></div>`, `<div V-bind:title="t('greet')"></div>`]) {
+    assert.deepEqual(getInlineCodeActions(text, 'html', at(text, 'greet'), locales), [], text);
+  }
+  // Raw x-template contents are not lowercased by the browser: `V-TITLE` stays static.
+  const raw = `<script type="text/x-template"><div V-TITLE="t('greet')"></div></script>`;
+  const [action] = getInlineCodeActions(raw, 'html', at(raw, 'greet'), locales);
+  assert.equal(apply(raw, action.edit), `<script type="text/x-template"><div V-TITLE="Say &quot;hi&quot; &lt;now&gt;"></div></script>`);
+});
+
+test('inline keeps bindings whose attribute name looks like a directive', () => {
+  for (const attribute of [':v-bind:title', '::title', 'v-bind:v-bind:title']) {
+    const text = `<template><div ${attribute}="t('greet')"></div></template>`;
+    const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), { en: { flat: { greet: 'Hello' } } });
+    const div = parseVue(apply(text, action.edit), { parseMode: 'sfc' }).children[0].children[0];
+    const [prop] = div.props;
+    assert.equal(prop.type, 7, attribute);
+    assert.equal(prop.arg.content, attribute.replace(/^(?::|v-bind:)/, ''), attribute);
+    assert.equal(vm.runInNewContext(prop.exp.content, {}, { timeout: 1000 }), 'Hello', attribute);
+  }
+});
+
+test('inline plain attributes and text keep carriage returns', () => {
+  const value = 'Line1\r\nLine2';
+  for (const [language, text] of [['html', `<svg><a :xlink:href="t('greet')">x</a></svg>`], ['vue', `<template><img :alt="t('greet')"></template>`], ['vue', `<template><p>t('greet')</p></template>`]]) {
+    const [action] = getInlineCodeActions(text, language, at(text, 'greet'), { en: { flat: { greet: value } } });
+    assert.doesNotMatch(action.edit.newText, /\r/, text);
+    // `whitespace: 'preserve'` isolates entity decoding from Vue's default text condensing.
+    const root = parseVue(apply(text, action.edit), { parseMode: language === 'vue' ? 'sfc' : 'html', whitespace: 'preserve' });
+    const find = (node) => node.type === 2 ? node : node.props?.find((p) => p.type === 6) || (node.children || []).map(find).find(Boolean);
+    const found = find(root);
+    assert.equal(found.type === 2 ? found.content : found.value.content, value, text);
+  }
+});
+
+test('inline treats legacy JavaScript MIME types as scripts and honours SFC attribute case', () => {
+  for (const type of ['text/x-javascript', 'application/x-javascript', 'text/javascript1.5', 'text/jscript', 'text/livescript']) {
+    const text = `<script type="${type}">window.label = t('greet');</script>`;
+    const [action] = getInlineCodeActions(text, 'html', at(text, 'greet'), locales);
+    assert.ok(action, type);
+    assert.equal(action.edit.newText, `'Say "hi" <now>'`);
+  }
+  // compiler-sfc ignores `LANG`, so this template is plain HTML.
+  const sfc = `<template LANG="pug"><p>{{ t('greet') }}</p></template>`;
+  assert.equal(getInlineCodeActions(sfc, 'vue', at(sfc, 'greet'), locales).length, 2);
 });
 
 test('inline Vue bound attribute keeps a string when the translation contains {', () => {
   const text = `<template><img :alt="$t('greet')"></template>`;
-  const [en] = getInlineCodeActions(text, at(text, 'greet'), { en: { flat: { greet: '{{ test }}' } } });
+  const [en] = getInlineCodeActions(text, 'vue', at(text, 'greet'), { en: { flat: { greet: '{{ test }}' } } });
   assert.equal(apply(text, en.edit), `<template><img :alt="'{{ test }}'"></template>`);
 });
 
@@ -227,7 +533,7 @@ test('inline bound attributes round-trip braces, quotes and entities through HTM
   for (const attribute of attributes) {
     const text = `<template><img ${attribute} data-keep="unchanged"></template>`;
     for (const value of values) {
-      const [action] = getInlineCodeActions(text, at(text, 'greet'), { en: { flat: { greet: value } } });
+      const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), { en: { flat: { greet: value } } });
       assert.ok(action, attribute);
       const updated = apply(text, action.edit);
       const image = DomUtils.findOne((node) => node.name === 'img', parseDocument(updated).children, true);
@@ -238,18 +544,6 @@ test('inline bound attributes round-trip braces, quotes and entities through HTM
       assert.equal(context.counter, 0, 'translation stays text rather than executing an expression');
     }
   }
-});
-
-test('inline JSX attribute unwraps braces to a quoted attribute', () => {
-  const text = `<img title={t('greet')} />`;
-  const [en] = getInlineCodeActions(text, at(text, 't('), locales);
-  assert.equal(apply(text, en.edit), '<img title="Say &quot;hi&quot; &lt;now&gt;" />');
-});
-
-test('inline JSX keeps quotes inside mixed brace expressions', () => {
-  const text = `<h1>{t('it') + extra}</h1>`;
-  const [en] = getInlineCodeActions(text, at(text, 't('), { en: { flat: { it: "it's" } } });
-  assert.equal(apply(text, en.edit), `<h1>{'it\\'s' + extra}</h1>`);
 });
 
 test('extract key prefix comes from the nearest ancestor with keys', () => {

@@ -230,8 +230,22 @@ function getCreateKeyActions(diagnostics, context) {
   return actions;
 }
 
+function templateLanguageOf(doc) {
+  if (/\.vue$/i.test(doc.uri) || doc.languageId === 'vue') return 'vue';
+  return /\.html?$/i.test(doc.uri) || doc.languageId === 'html' ? 'html' : undefined;
+}
+
+// Parser dialect for Inline in non-template documents; the extension wins over languageId.
+function sourceLanguageOf(doc) {
+  if (/\.tsx$/i.test(doc.uri)) return 'typescriptreact';
+  if (/\.[cm]?ts$/i.test(doc.uri)) return 'typescript';
+  if (/\.[cm]?jsx?$/i.test(doc.uri)) return 'javascript';
+  if (doc.languageId === 'typescriptreact' || doc.languageId === 'tsx') return 'typescriptreact';
+  return doc.languageId === 'typescript' ? 'typescript' : 'javascript';
+}
+
 function getExtractActions(doc, params, diagnostics) {
-  const language = /\.vue$/i.test(doc.uri) ? 'vue' : /\.html?$/i.test(doc.uri) || doc.languageId === 'html' ? 'html' : undefined;
+  const language = templateLanguageOf(doc);
   if (!language) return [];
   const context = getProjectContext(doc.uri);
   const { locales, localeTexts } = loadLocalesForContext(context);
@@ -250,7 +264,8 @@ function getExtractActions(doc, params, diagnostics) {
 
 function getInlineActions(doc, params) {
   const { locales } = loadLocalesForContext(getProjectContext(doc.uri));
-  return getInlineCodeActions(doc.getText(), params.range, locales).map((action) => ({
+  const language = templateLanguageOf(doc) || sourceLanguageOf(doc);
+  return getInlineCodeActions(doc.getText(), language, params.range, locales).map((action) => ({
     title: action.title,
     kind: CodeActionKind.RefactorInline,
     edit: { documentChanges: [TextDocumentEdit.create({ uri: doc.uri, version: doc.version }, [action.edit])] },
@@ -492,8 +507,7 @@ function normalizeIncomingSettings(value) {
 function validate(document) {
   const context = getProjectContext(document.uri);
   const { locales } = loadLocalesForContext(context);
-  const templateLanguage = /\.vue$/i.test(document.uri) ? 'vue'
-    : /\.html?$/i.test(document.uri) || document.languageId === 'html' ? 'html' : undefined;
+  const templateLanguage = templateLanguageOf(document);
   if ((isSourceFile(document.uri) || templateLanguage) && !isLocaleFileUri(document.uri)) {
     const text = document.getText();
     const diagnostics = [
