@@ -188,6 +188,8 @@ test('decorators elsewhere in a TS file do not disable inline', () => {
   const sources = [
     "@sealed\nclass View { label() { return t('greet'); } }",
     "class View { constructor(@inject foo: string) {} label() { return t('greet'); } }",
+    "@sealed class View { accessor name = ''; label = t('greet'); }",
+    "export @sealed class View { label = t('greet'); }",
   ];
   for (const text of sources) {
     for (const language of ['typescript', 'typescriptreact']) {
@@ -396,14 +398,48 @@ test('extract still rewrites ordinary HTML attributes', () => {
   assert.deepEqual(actions.map((a) => a.value).sort(), ['Hello world', 'Save']);
 });
 
-test('inline Vue interpolation keeps mustache when the translation contains {', () => {
+test('inline Vue interpolation keeps a JS string when the translation contains braces', () => {
   const text = `<template><p>{{ t('greet') }}</p></template>`;
-  const [expr] = getInlineCodeActions(text, 'vue', at(text, 't('), { en: { flat: { greet: '{++counter}' } } });
-  assert.equal(apply(text, expr.edit), `<template><p>{{ '{++counter}' }}</p></template>`);
-  const [interp] = getInlineCodeActions(text, 'vue', at(text, 't('), { en: { flat: { greet: 'Hello {name}' } } });
-  assert.equal(apply(text, interp.edit), `<template><p>{{ 'Hello {name}' }}</p></template>`);
-  const [mustache] = getInlineCodeActions(text, 'vue', at(text, 't('), { en: { flat: { greet: '{{ test }}' } } });
-  assert.equal(apply(text, mustache.edit), `<template><p>{{ '{{ test }}' }}</p></template>`);
+  for (const value of ['{++counter}', 'Hello {name}', '{{ test }}', 'a }} b &amp; "q"']) {
+    const [action] = getInlineCodeActions(text, 'vue', at(text, 't('), { en: { flat: { greet: value } } });
+    const p = parseVue(apply(text, action.edit), { parseMode: 'sfc' }).children[0].children[0];
+    assert.deepEqual(p.children.map((node) => node.type), [5], value);
+    const context = { counter: 0 };
+    assert.equal(vm.runInNewContext(p.children[0].content.content, context, { timeout: 1000 }), value);
+    assert.equal(context.counter, 0);
+  }
+});
+
+test('inline judges Vue expressions after entity decoding', () => {
+  for (const expression of [`a &lt; b ? t('greet') : ''`, `a &amp;&amp; t('greet')`]) {
+    const text = `<template><p>{{ ${expression} }}</p></template>`;
+    const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), { en: { flat: { greet: 'A &amp; "B"' } } });
+    assert.ok(action, expression);
+    const p = parseVue(apply(text, action.edit), { parseMode: 'sfc' }).children[0].children[0];
+    assert.equal(vm.runInNewContext(p.children[0].content.content, { a: 1, b: 2 }, { timeout: 1000 }), 'A &amp; "B"', expression);
+  }
+});
+
+test('inline HTML scripts follow their MIME type', () => {
+  const value = '&apos; + secret + &apos;';
+  for (const body of [`{{ t('greet') }}`, `<p>{{ t('greet') }}</p>`]) {
+    const text = `<script type="text/x-template">${body}</script>`;
+    const [action] = getInlineCodeActions(text, 'html', at(text, 'greet'), { en: { flat: { greet: value } } });
+    assert.ok(action, body);
+    const template = /<script[^>]*>([\s\S]*)<\/script>/.exec(apply(text, action.edit))[1];
+    const textOf = (node) => (node.type === 2 ? node.content : (node.children || []).map(textOf).join(''));
+    assert.equal(textOf(parseVue(template, { parseMode: 'html' })), value, template);
+  }
+  const plain = `<script type="text/plain">t('greet')</script>`;
+  assert.deepEqual(getInlineCodeActions(plain, 'html', at(plain, 'greet'), locales), []);
+  const module = `<script type="module">const label = t('greet')</script>`;
+  const [js] = getInlineCodeActions(module, 'html', at(module, 'greet'), locales);
+  assert.equal(apply(module, js.edit), `<script type="module">const label = 'Say "hi" <now>'</script>`);
+});
+
+test('inline offers nothing inside CDATA sections', () => {
+  const text = `<template><svg><![CDATA[t('greet')]]></svg></template>`;
+  assert.deepEqual(getInlineCodeActions(text, 'vue', at(text, 'greet'), locales), []);
 });
 
 test('inline Vue bound attribute keeps a string when the translation contains {', () => {
