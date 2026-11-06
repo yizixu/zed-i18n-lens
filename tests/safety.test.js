@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractI18nKeys, getCompletionPrefix, findJsonKeyLocation, insertNestedJsonKey, localeKeyAtPosition, findLocaleKeyTarget } from '../server/core.js';
+import { extractI18nKeys, getCompletionPrefix, getDiagnostics, findCodeKeyRanges, getInlayHints, findJsonKeyLocation, insertNestedJsonKey, localeKeyAtPosition, findLocaleKeyTarget } from '../server/core.js';
 
 const prefix = (text) => getCompletionPrefix(text, { line: text.split('\n').length - 1, character: text.split('\n').at(-1).length });
 
@@ -31,6 +31,23 @@ test('recognition retains Vue attributes, JSX and template-literal expressions',
   for (const item of items) assert.equal(source.slice(item.startOffset, item.endOffset), item.key);
 });
 
+test('recognition skips lookalike calls in static HTML and JSX attributes', () => {
+  const source = `<a title="$t('nav.docs')" alt="t('site.title')" data-tip="i18n.t('help')">$t('site.footer')</a>`;
+  assert.deepEqual(extractI18nKeys(source).map((item) => item.key), ['site.footer']);
+  assert.deepEqual(extractI18nKeys(`<img title="t('literal')" />`).map((item) => item.key), []);
+  assert.deepEqual(extractI18nKeys(source, { includeStaticAttrCalls: true }).map((item) => item.key), ['nav.docs', 'site.title', 'help', 'site.footer']);
+});
+
+test('diagnostics, refs and inlays ignore static attribute lookalike calls', () => {
+  const text = `<img title="t('missing')" alt="t('also')">`;
+  const locales = { en: { path: 'en.json', flat: { missing: 'M', also: 'A' } } };
+  assert.deepEqual(getDiagnostics(text, { en: { path: 'en.json', flat: { real: 'R' } } }), []);
+  assert.deepEqual(findCodeKeyRanges(text, 'missing'), []);
+  assert.deepEqual(getInlayHints(text, null, locales, 'en'), []);
+  const bound = `<div :title="t('missing')"></div>`;
+  assert.equal(getDiagnostics(bound, { en: { path: 'en.json', flat: { real: 'R' } } })[0].data.key, 'missing');
+});
+
 test('completion distinguishes empty i18n strings from non-i18n contexts', () => {
   assert.equal(prefix("t('"), '');
   assert.equal(prefix("const x = 1;"), undefined);
@@ -39,6 +56,7 @@ test('completion distinguishes empty i18n strings from non-i18n contexts', () =>
   assert.equal(prefix("not$t('ignored"), undefined);
   assert.equal(prefix("t('prefix.' + suffix"), undefined);
   assert.equal(prefix('<button :title="$t(\'common.'), 'common.');
+  assert.equal(prefix('<a title="t(\'ignored'), undefined);
   assert.equal(prefix('<div v-t="{ path: \'common.'), 'common.');
   assert.equal(prefix('const text = `raw ${t("common.'), 'common.');
 });
