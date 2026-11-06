@@ -940,8 +940,14 @@ function scanElements(text, opaque = computeOpaqueRanges(text).ranges) {
       }
     } else if (m[2]) {
       const tag = m[2].toLowerCase();
-      if (m[4] || VOID_ELEMENTS.has(tag)) continue;
       const el = { tag, start: m.index, end: text.length, attrs: m[3], openEnd: re.lastIndex };
+      if (m[4] || VOID_ELEMENTS.has(tag)) {
+        // Retain the opening span so attributes on <img> / <Component />
+        // are not mistaken for text in an enclosing element.
+        el.end = re.lastIndex;
+        elements.push(el);
+        continue;
+      }
       if (tag === 'script' || tag === 'style') {
         const close = text.toLowerCase().indexOf('</' + tag, re.lastIndex);
         const stop = close < 0 ? text.length : text.indexOf('>', close) + 1 || text.length;
@@ -1108,13 +1114,15 @@ export function getInlineCodeActions(text, range, locales = {}) {
   const after = text.slice(end);
   const interp = /\{\{\s*$/.exec(before);
   const interpEnd = /^\s*\}\}/.exec(after);
-  const attr = attributeLiteralContext(text, start, end);
-  if (!attr) {
+  const frame = markupFrame(text, start);
+  // Assignment syntax alone is not evidence of an HTML attribute. In code
+  // (including <script>) or markup text, replace only the call itself.
+  const attr = frame === 'openTag' && attributeLiteralContext(text, start, end);
+  if (frame === 'openTag' && !attr) {
     const openAttr = /(?:^|[\s>])(?:(?::|v-bind:)?[\w-]+)\s*=\s*(["'])(?:(?!\1)[\s\S])*$/.exec(before);
     if (openAttr && after.includes(openAttr[1])) return [];
   }
   const jsxAttr = !attr && jsxAttributeContext(text, start, end);
-  const frame = markupFrame(text, start);
   const jsxOpen = /\{\s*$/.exec(before);
   const jsxClose = /^\s*\}/.exec(after);
   const jsxChild = !attr && !jsxAttr && frame === 'text' && jsxOpen && jsxClose;

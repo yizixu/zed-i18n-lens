@@ -82,7 +82,7 @@ test('extract offers selected raw text even without diagnostics', () => {
 });
 
 const locales = { en: { flat: { greet: 'Say "hi" <now>', it: "it's" } }, zh: { flat: { greet: '你好' } } };
-const at = (text, needle) => { const p = { line: 0, character: text.indexOf(needle) + 1 }; return { start: p, end: p }; };
+const at = (text, needle) => { const p = TextDocument.create('file:///x', 'vue', 0, text).positionAt(text.indexOf(needle) + 1); return { start: p, end: p }; };
 
 test('inline template interpolation as plain text per locale', () => {
   const text = `<template><p>{{ $t('greet') }}</p></template>`;
@@ -103,6 +103,76 @@ test('inline JS call becomes a quoted string literal', () => {
   const actions = getInlineCodeActions(text, at(text, 't('), locales);
   assert.equal(actions.length, 1);
   assert.equal(apply(text, actions[0].edit), "const a = 'it\\'s';");
+});
+
+test('inline semicolonless JS assignments preserve the exact locale string', () => {
+  const sources = [
+    "const label = t('greet')",
+    'const label = t("greet")\nconst following = "unchanged"',
+    "let label\nlabel = i18n.t('greet')\n",
+    "const markup = '<input title=';\nconst label = t('greet')",
+  ];
+  const values = ['A &amp; B', 'First\nSecond', 'It\'s "quoted" \\path\r\nNext <tag> {name}'];
+  for (const text of sources) {
+    for (const value of values) {
+      const [action] = getInlineCodeActions(text, at(text, 'greet'), { en: { flat: { greet: value } } });
+      assert.ok(action, text);
+      const updated = apply(text, action.edit);
+      assert.equal(updated, text.replace(/(?:i18n\.)?t\((['"])greet\1\)/, () => action.edit.newText), 'only the call is replaced');
+      assert.equal(vm.runInNewContext(updated + '\nlabel', {}, { timeout: 1000 }), value, updated);
+    }
+  }
+});
+
+test('inline typed TS assignments change only the call expression', () => {
+  const text = "const label: string = t('greet')\nconst following = 1";
+  const value = 'A &amp; B\n"quoted"';
+  const [action] = getInlineCodeActions(text, at(text, 'greet'), { en: { flat: { greet: value } } });
+  assert.ok(action);
+  assert.equal(apply(text, action.edit), text.replace("t('greet')", () => action.edit.newText));
+  assert.equal(vm.runInNewContext(action.edit.newText, {}, { timeout: 1000 }), value);
+});
+
+test('inline JS assignments inside HTML and Vue scripts stay string literals', () => {
+  const sources = [
+    "<script>const label = t('greet')\n</script>",
+    "<template><p>Keep me</p></template>\n<script setup>const label = t('greet')\n</script>",
+  ];
+  const value = 'A &amp; B\n</script><img> "quoted"';
+  for (const text of sources) {
+    const [action] = getInlineCodeActions(text, at(text, 'greet'), { en: { flat: { greet: value } } });
+    assert.ok(action);
+    const updated = apply(text, action.edit);
+    assert.equal(updated, text.replace("t('greet')", () => action.edit.newText));
+    const script = /<script[^>]*>([\s\S]*?)<\/script>/.exec(updated)[1];
+    assert.equal(vm.runInNewContext(script + '\nlabel', {}, { timeout: 1000 }), value);
+  }
+});
+
+test('inline assignment-like markup text does not become an attribute', () => {
+  const text = "<template><p>label = t('greet')\n</p></template>";
+  const value = 'A &amp; B\nNext';
+  const [action] = getInlineCodeActions(text, at(text, 'greet'), { en: { flat: { greet: value } } });
+  assert.ok(action);
+  const updated = apply(text, action.edit);
+  assert.equal(updated, text.replace("t('greet')", () => action.edit.newText));
+  assert.equal(DomUtils.textContent(parseDocument(updated)), 'label = ' + value + '\n');
+});
+
+test('inline retains attributes on nested void and self-closing elements', () => {
+  const sources = [
+    '<template><img data-before="x > y" :alt="t(\'greet\')"></template>',
+    '<template><Card data-before="x > y" :title="t(\'greet\')" /></template>',
+    '<template><img title=t(\'greet\') data-keep="same"></template>',
+  ];
+  const value = 'A &amp; B "quoted"';
+  for (const text of sources) {
+    const [action] = getInlineCodeActions(text, at(text, 'greet'), { en: { flat: { greet: value } } });
+    assert.ok(action, text);
+    const element = DomUtils.findOne((node) => ['img', 'card'].includes(node.name), parseDocument(apply(text, action.edit), { recognizeSelfClosing: true }).children, true);
+    assert.equal(element.attribs.alt ?? element.attribs.title, value);
+    assert.equal(element.attribs['data-before'] ?? element.attribs['data-keep'], text.includes('data-before') ? 'x > y' : 'same');
+  }
 });
 
 test('inline JS does not treat tags inside string literals as HTML context', () => {

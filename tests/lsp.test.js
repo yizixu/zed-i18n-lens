@@ -813,6 +813,41 @@ test('inline attribute action preserves unsaved locale text through HTML and JS 
   assert.equal(await fs.readFile(path.join(s.root, 'locales/en.json'), 'utf8'), diskLocale);
 });
 
+test('inline semicolonless assignments preserve locale text over stdio', async (t) => {
+  const value = 'A &amp; B\r\nIt\'s "quoted" \\path </script>';
+  const locale = JSON.stringify({ greet: value });
+  const sources = {
+    'src/app.js': "const label = t('greet')\nconst keep = 'same'",
+    'src/app.ts': "const label: string = t('greet')\nconst keep = 'same'",
+    'src/App.vue': "<template><p>Keep me</p></template>\n<script setup>const label = t('greet')\nconst keep = 'same'</script>",
+    'src/page.html': "<script>const label = t('greet')\nconst keep = 'same'</script>",
+  };
+  const s = await startServer(t, { 'locales/en.json': locale, ...sources });
+  for (const [name, source] of Object.entries(sources)) {
+    await s.open(name, source, 7);
+    const caret = TextDocument.create(s.uri(name), 'typescript', 7, source).positionAt(source.indexOf('greet') + 1);
+    const actions = await s.call('textDocument/codeAction', name, { range: { start: caret, end: caret }, context: { diagnostics: [] } });
+    const action = actions.find((item) => item.title === 'Inline i18n key "greet" as en');
+    assert.ok(action, name);
+    const edits = documentEdits(action);
+    assert.equal(edits.length, 1, 'only the source is edited');
+    assert.deepEqual(edits[0].textDocument, { uri: s.uri(name), version: 7 });
+    assert.equal(edits[0].edits.length, 1);
+    const literal = edits[0].edits[0].newText;
+    assert.equal(vm.runInNewContext(literal, {}, { timeout: 1000 }), value, name);
+    const updated = applyText(source, edits[0]);
+    assert.equal(updated, source.replace("t('greet')", () => literal), 'surrounding code is untouched');
+    if (name.endsWith('.js')) assert.equal(vm.runInNewContext(updated + '\nlabel', {}, { timeout: 1000 }), value);
+    if (/\.(?:vue|html)$/.test(name)) {
+      const script = /<script[^>]*>([\s\S]*?)<\/script>/.exec(updated)[1];
+      assert.equal(vm.runInNewContext(script + '\nlabel', {}, { timeout: 1000 }), value, name);
+    }
+    await s.change(name, updated, 8);
+    assert.equal(await fs.readFile(path.join(s.root, name), 'utf8'), source, 'server does not write source files itself');
+  }
+  assert.equal(await fs.readFile(path.join(s.root, 'locales/en.json'), 'utf8'), locale);
+});
+
 test('an Extract exception preserves other code actions and subsequent language requests', { timeout: 15000 }, async (t) => {
   const locale = '{"known":"Known"}';
   const source = '<template>' + '<div>'.repeat(6000) + 'Hello World' + '</div>'.repeat(6000) + "{{ t('missing') }}</template>";
