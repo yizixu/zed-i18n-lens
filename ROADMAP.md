@@ -32,16 +32,8 @@
   - References：从源码或 JSON/TS locale 定义查引用，隔离独立子包并包含尚未落盘的打开源码
   - 编辑安全：读取未保存 locale，版本化最小编辑，拒绝歧义 JSON 路径及目录路由
 - 项目配置 `.zed/i18nlensrc.json`（`defaultLocale` / `localeDirs` / `inlayHints` / `rawTextDiagnostics` / `packages`），支持 monorepo `packages` 多上下文
-- 自动化验证：`npm test`（纯函数 + 真实 stdio LSP 回归，178 项）
+- 自动化验证：`npm test`（纯函数 + 真实 stdio LSP 回归，202 项）
 - Zed extension 编译验证：`cargo check --target wasm32-wasip1`
-
----
-
-## v0.15.0 发布阻塞项
-
-- Inline 会把无分号的普通 JS/TS 赋值（如 `const label = t('greet')`）误判为 HTML 属性：实体文本被二次转义，含换行的译文可生成语法错误
-- 发布准备 PR 保持草稿；需先单独修复上下文识别，并补上无分号赋值、实体文本和多行译文的回归测试，再重新验证打包产物
-- 本次只准备版本与文档，不以文档披露代替上述修复，也不触发 npm 发布
 
 ---
 
@@ -53,7 +45,8 @@
 
 - Extract / Inline 已通过 PR #4 合入，Rename 继续由 issue #2 单独跟踪
 - 提取仅在 Vue/HTML 光标或选区显式触发，不依赖 raw-text 诊断，也不改变其保守规则
-- 提取创建新 key、避开父级叶子及重名冲突；内联处理属性引号、实体、花括号、JSX 和 HTML script 转义，跳过部分属性表达式
+- 提取创建新 key、避开父级叶子及重名冲突
+- 内联用 Vue 模板编译器与 Babel 定位真实调用（PR #7），处理属性、插值、实体、花括号、JSX 和 HTML script；上下文无法确认时不提供操作
 - Extract / Inline 异常单独捕获，不丢弃已有快速修复；覆盖未保存 locale、坏 JSON 和后续服务请求
 - README 补充使用方式及边界：Inline 只替换原文、不执行运行时解析；多文件编辑失败回滚仍待验证
 
@@ -182,6 +175,7 @@ node server/report.js --root . --format markdown
 - locale 写入类 Code Action 只支持 JSON locale；TS/JS module 与 JSONC 仍不支持写入
 - Extract 同时编辑源码和首选语言文件；权限失败等情况下的多文件回滚未验证，不保证客户端原子应用
 - Inline 只替换 locale 原文，不执行插值、复数或关联消息的运行时解析
+- Inline 对带修饰符或动态参数的绑定、部分表达式、未闭合标签/插值、CDATA、style 与自定义块不提供操作
 - TS/JS module 只能安全重命名最后一段 key
 - locale 加载器不执行用户代码，复杂表达式会被忽略而不是求值
 - 源码扫描有文件数上限（约 5,000），大仓库结果不是完整性保证

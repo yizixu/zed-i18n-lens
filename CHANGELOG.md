@@ -4,20 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows semantic versioning while it is developed locally.
 
-## [0.15.0] - 2026-11-06
+## [0.15.0] - 2026-11-07
 
 ### Added
 
 - Explicit Extract code actions for Vue/HTML template text and supported literal attributes. Extract replaces the source text with a `$t('key')` expression and adds a new entry to the preferred locale's JSON file. It works independently of optional raw-text diagnostics and does not extract ordinary JS/TS strings.
-- Inline code actions for supported parameterless translation calls in Vue/HTML templates and JS/TS/JSX source, with one action per locale that defines the key. Inline inserts the locale's stored text, not a runtime-resolved translation.
+- Inline code actions for supported parameterless translation calls in Vue/HTML templates and JS/TS/JSX/TSX source, with one action per locale that defines the key. Inline inserts the locale's stored text, not a runtime-resolved translation.
 - Regression coverage for attribute whitespace, quotes, entities and braces, JSX expressions, embedded HTML scripts, conflicting key prefixes, unsaved locale text, malformed JSON, and code-action exception isolation.
 
 ### Changed
 
-- Extract avoids occupied key paths, including ancestor leaves, without unbounded suffix searches for an impossible prefix. Inline adds string-literal handling for braces in Vue/JSX text and withholds actions for partial attribute expressions.
+- Extract avoids occupied key paths, including ancestor leaves, without unbounded suffix searches for an impossible prefix.
+- Inline locates calls with real parsers rather than lexical guesses ([PR #7](https://github.com/yizixu/zed-i18n-lens/pull/7)): `@vue/compiler-dom` for Vue/HTML templates, interpolations, attributes and `<script>` blocks, and `@babel/parser` for JS/TS/JSX/TSX. Only a verified call expression is rewritten, so generics, comparisons, regular expressions, decorators, JSX text and semicolonless assignments are handled correctly. Contexts that cannot be proven safe offer no action: unclosed tags or interpolations, CDATA, `<style>` and custom SFC blocks, non-HTML `<template lang>`, non-JavaScript `<script type>`, partial expressions, and bindings with modifiers or dynamic arguments.
+- Inline keeps JSX children and attributes as `{'…'}` string expressions. Strings inserted into Vue interpolations escape markup characters as `\uXXXX`, so SFC and in-DOM templates decode them identically; translations written into markup keep `{{`, `}}` and carriage returns literal.
 - Extract and Inline failures are isolated from existing quick fixes and subsequent language requests. Multi-file edits still depend on the client's application and failure-handling behavior; rollback on permission errors is not guaranteed.
 - Documented Extract/Inline usage and limitations. Rename remains separate and is tracked in [issue #2](https://github.com/yizixu/zed-i18n-lens/issues/2); Extract/Inline was contributed in [PR #4](https://github.com/yizixu/zed-i18n-lens/pull/4).
-- Known release blocker: Inline can mistake a semicolonless JS/TS assignment for an HTML attribute, changing entity text or producing an invalid multiline string. Context detection and regression tests must be fixed before publishing `0.15.0`.
+- Added runtime dependencies `@babel/parser`, `@vue/compiler-dom` and `entities` to the language server package.
 - Bumped extension/package/Cargo version from `0.14.0` to `0.15.0`.
 
 ## [0.14.0] - 2026-10-27

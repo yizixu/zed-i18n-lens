@@ -151,11 +151,18 @@ Extract also adds `"Home": { "save_changes": "Save changes" }` to the selected l
 
 Place the caret or a selection inside a static-key call such as `t('Home.save_changes')` and choose an **Inline** action for the desired locale. One action is offered per loaded locale that defines the key. It changes only the source and leaves the locale entry intact.
 
-Inline supports `t`, `$t`, `tc`, `$tc`, `i18n.t`, and `i18n.tc` calls with **only the key argument**, in Vue/HTML templates and JS/TS/JSX/TSX source. Passing any additional argument, even `{}`, suppresses the action. Other recognized forms such as `formatMessage`, `v-t`, or translation components are not supported by Inline. Partial quoted attribute expressions such as `:title="t('key') + suffix"` are skipped.
+Inline supports `t`, `$t`, `tc`, `$tc`, `i18n.t`, and `i18n.tc` calls with **only the key argument**, in Vue/HTML templates and JS/TS/JSX/TSX source. Passing any additional argument, even `{}`, suppresses the action. Other recognized forms such as `formatMessage`, `v-t`, or translation components are not supported by Inline.
 
-Inline uses context-dependent HTML/JS string escaping, retaining a string expression where needed for braces in Vue/JSX text. It is intended to insert the locale's **stored text**, not a resolved runtime message: `{name}`, plural forms, and linked messages are not evaluated. A call without extra arguments can still rely on runtime behavior, so check that replacing it with literal text is appropriate. Recognition is lexical, not full AST, scope, or framework analysis.
+Calls are located with real parsers: Vue's template compiler (`@vue/compiler-dom`) for `.vue` and HTML documents, and Babel for JS/TS/JSX/TSX source and `<script>` blocks. Only a genuine call expression is rewritten:
 
-**Known bug — release blocker:** A plain JS/TS assignment without a semicolon, such as `const label = t('greet')`, can be misclassified as an HTML attribute. Inline can then double-escape entity text (`A &amp; B` becomes `A &amp;amp; B`) or insert an unescaped newline into a quoted string, producing invalid code. Avoid Inline in JS/TS assignment statements until this context-detection bug is fixed; this is not merely a runtime-message limitation.
+- **JS/TS/JSX/TSX and `<script>`**: the call becomes a JS string literal; JSX children and attributes keep braces, e.g. `title={'Save'}`. Look-alike text such as `<p>t('key')</p>` in JSX is not a call and is left alone.
+- **Template text**: the call becomes HTML-escaped text; a whole `{{ t('key') }}` becomes plain text unless the translation contains braces, in which case a JS string stays inside the interpolation.
+- **Attributes**: a whole `:title="t('key')"` / `v-bind:title` binding becomes `title="…"`; a static `title="$t('key')"` keeps its attribute.
+- HTML `<script type="text/x-template">` contents are handled as a template; other non-JavaScript script types are skipped.
+
+When the context cannot be proven safe, no action is offered: partial expressions such as `:title="t('key') + suffix"`, bindings with modifiers or dynamic arguments, other directives, unclosed tags or interpolations while typing, CDATA, `<style>` and custom SFC blocks, and `<template lang="pug">` or similar.
+
+Inline is intended to insert the locale's **stored text**, not a resolved runtime message: `{name}`, plural forms, and linked messages are not evaluated. A call without extra arguments can still rely on runtime behavior, so check that replacing it with literal text is appropriate. Vue's own whitespace condensing still applies to text produced from a whole interpolation.
 
 ### Editing and failure boundaries
 
