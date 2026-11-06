@@ -1029,9 +1029,10 @@ function decodedCall(raw, from, to, decode) {
   return code.slice(pos, pos + call.length) === call ? { code, start: pos, end: pos + call.length } : null;
 }
 
-// Attribute names are ASCII case-insensitive in HTML (`TYPE`, `Lang`).
-function staticAttr(element, name) {
-  const prop = element.props.find((p) => p.type === NodeTypes.ATTRIBUTE && p.name.toLowerCase() === name);
+// HTML attribute names are ASCII case-insensitive (`TYPE`); compiler-sfc reads
+// SFC block attributes such as `lang` case-sensitively.
+function staticAttr(element, name, html) {
+  const prop = element.props.find((p) => p.type === NodeTypes.ATTRIBUTE && (html ? p.name.toLowerCase() : p.name) === name);
   return prop?.value?.content;
 }
 
@@ -1056,9 +1057,12 @@ function scriptDialect(lang) {
   return lang === 'tsx' ? 'typescriptreact' : 'javascript';
 }
 
-function attributeTarget(text, prop, start, end, dialect) {
+function attributeTarget(text, prop, start, end, dialect, html) {
   const callText = text.slice(start, end);
   if (prop.type === NodeTypes.ATTRIBUTE) {
+    // Browsers lowercase attribute names, so `V-BIND:TITLE` is a binding
+    // there even though Vue's case-sensitive parser saw a static attribute.
+    if (html && /^(?:v-|[:@#.])/i.test(prop.name)) return null;
     // Static attribute text such as title="$t('key')" is a look-alike, not a call.
     if (!prop.value) return null;
     const raw = text.slice(prop.value.loc.start.offset, prop.value.loc.end.offset).replace(/^(["'])([\s\S]*)\1$/, '$2');
@@ -1076,7 +1080,13 @@ function attributeTarget(text, prop, start, end, dialect) {
 }
 
 const TOLERATED_TEMPLATE_ERRORS = new Set([ErrorCodes.X_MISSING_END_TAG, ErrorCodes.UNEXPECTED_CHARACTER_IN_UNQUOTED_ATTRIBUTE_VALUE]);
-const JS_SCRIPT_TYPES = new Set(['', 'module', 'text/javascript', 'application/javascript', 'text/ecmascript', 'application/ecmascript', 'text/jsx', 'text/babel']);
+// HTML's "JavaScript MIME type essence match" list plus module and JSX/Babel blocks.
+const JS_SCRIPT_TYPES = new Set([
+  '', 'module', 'text/jsx', 'text/babel',
+  'application/ecmascript', 'application/javascript', 'application/x-ecmascript', 'application/x-javascript',
+  'text/ecmascript', 'text/javascript', 'text/javascript1.0', 'text/javascript1.1', 'text/javascript1.2', 'text/javascript1.3',
+  'text/javascript1.4', 'text/javascript1.5', 'text/jscript', 'text/livescript', 'text/x-ecmascript', 'text/x-javascript',
+]);
 
 /**
  * Where a call sits in a Vue SFC or HTML document, from Vue's own template
@@ -1113,7 +1123,7 @@ function templateInlineTarget(text, language, start, end) {
     if (node.type === NodeTypes.ELEMENT) {
       if (language === 'vue' && parent === root && node.tag === 'template' && (staticAttr(node, 'lang') || 'html') !== 'html') return null;
       const prop = node.props.find((p) => p.loc.start.offset <= start && end <= p.loc.end.offset);
-      if (prop) return attributeTarget(text, prop, start, end, exprDialect);
+      if (prop) return attributeTarget(text, prop, start, end, exprDialect, language === 'html');
       ancestors.push(node);
       parent = node;
       continue;
@@ -1130,7 +1140,7 @@ function templateInlineTarget(text, language, start, end) {
       const base = node.loc.start.offset;
       const code = text.slice(base, node.loc.end.offset);
       if (language === 'vue') return isCallInScript(code, scriptDialect(staticAttr(parent, 'lang')), start - base, end - base) ? { kind: 'script' } : null;
-      const type = (staticAttr(parent, 'type') || '').trim().toLowerCase();
+      const type = (staticAttr(parent, 'type', true) || '').trim().toLowerCase();
       if (JS_SCRIPT_TYPES.has(type)) return isCallInScript(code, 'javascript', start - base, end - base) ? { kind: 'script' } : null;
       if (type !== 'text/x-template') return null;
       // An in-DOM Vue template: its raw contents are compiled as a template.
@@ -1140,8 +1150,9 @@ function templateInlineTarget(text, language, start, end) {
     if (parent.type === NodeTypes.ELEMENT && parent.tag === 'style') return null;
     // SFC text outside <template> (custom blocks, stray root text) is not markup.
     if (language === 'vue' && !ancestors.some((el) => el.tag === 'template' && sfcBlocks.includes(el))) return null;
-    // CDATA content is never entity-decoded; HTML escaping would change it.
-    if (inCdata(text, node, start, end)) return null;
+    // CDATA exists only in SVG/MathML content and is never entity-decoded, so
+    // HTML escaping would change it. Elsewhere (`<textarea>`) it is plain text.
+    if (parent.type === NodeTypes.ELEMENT && parent.ns !== 0 && inCdata(text, node, start, end)) return null;
     return { kind: 'text' };
   }
 }
@@ -1284,10 +1295,10 @@ function inlineEdit(text, target, start, end, quote, value) {
   const replace = (from, to, newText) => ({ range: makeRange(text, from, to), newText });
   if (target.kind === 'script') return replace(start, end, escapeJsString(value, quote));
   // Template text: `{{`/`}}` in the translation must not become a Vue interpolation.
-  if (target.kind === 'text') return replace(start, end, escapeHtml(value).replace(/\{/g, '&#123;').replace(/\}/g, '&#125;'));
+  if (target.kind === 'text') return replace(start, end, escapeMarkup(value).replace(/\{/g, '&#123;').replace(/\}/g, '&#125;'));
   if (target.kind === 'interpolation') {
     // Without braces the whole `{{ t('key') }}` becomes plain text.
-    if (target.whole && !/[{}]/.test(value)) return replace(target.start, target.end, escapeHtml(value));
+    if (target.whole && !/[{}]/.test(value)) return replace(target.start, target.end, escapeMarkup(value));
     // A JS literal with no markup-significant characters at all: entities
     // would change whether browser Vue re-decodes the whole expression, `<`
     // is parsed as a tag in in-DOM templates, and `}}` ends the interpolation.
@@ -1298,7 +1309,7 @@ function inlineEdit(text, target, start, end, quote, value) {
     const jsQuote = target.quote === '"' ? "'" : '"';
     return replace(target.start, target.end, `:${target.name}=${target.quote}${escapeHtmlAttribute(escapeJsString(value, jsQuote), target.quote)}${target.quote}`);
   }
-  return replace(target.start, target.end, `${target.name}="${escapeHtml(value)}"`);
+  return replace(target.start, target.end, `${target.name}="${escapeMarkup(value)}"`);
 }
 
 function markupFreeJsString(value, quote) {
@@ -1313,6 +1324,11 @@ function markupFreeJsString(value, quote) {
 
 function escapeHtml(value) {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// HTML parsing turns a literal CR (or CRLF) into LF; a character reference keeps it.
+function escapeMarkup(value) {
+  return escapeHtml(value).replace(/\r/g, '&#13;');
 }
 
 function escapeHtmlAttribute(value, quote) {

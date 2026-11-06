@@ -458,11 +458,42 @@ test('inline offers nothing inside CDATA sections only', () => {
   for (const text of [`<template><svg><![CDATA[t('greet')]]></svg></template>`, `<template><svg>a<![CDATA[t('greet')]]>b</svg></template>`]) {
     assert.deepEqual(getInlineCodeActions(text, 'vue', at(text, 'greet'), locales), [], text);
   }
-  for (const text of [`<template><p title="<![CDATA[">t('greet')]]></p></template>`, `<template><svg><![CDATA[x]]>t('greet')</svg></template>`, `<template><!-- <![CDATA[ --><p>t('greet')</p></template>`]) {
+  for (const text of [`<template><p title="<![CDATA[">t('greet')]]></p></template>`, `<template><svg><![CDATA[x]]>t('greet')</svg></template>`, `<template><!-- <![CDATA[ --><p>t('greet')</p></template>`, `<template><textarea><![CDATA[t('greet')]]></textarea></template>`]) {
     const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), locales);
     assert.ok(action, text);
     assert.equal(apply(text, action.edit), text.replace("t('greet')", 'Say &quot;hi&quot; &lt;now&gt;'));
   }
+});
+
+test('inline leaves HTML bindings with uppercase directive names alone', () => {
+  for (const text of [`<div V-BIND:TITLE="t('greet')"></div>`, `<div V-bind:title="t('greet')"></div>`]) {
+    assert.deepEqual(getInlineCodeActions(text, 'html', at(text, 'greet'), locales), [], text);
+  }
+});
+
+test('inline plain attributes and text keep carriage returns', () => {
+  const value = 'Line1\r\nLine2';
+  for (const [language, text] of [['html', `<svg><a :xlink:href="t('greet')">x</a></svg>`], ['vue', `<template><img :alt="t('greet')"></template>`], ['vue', `<template><p>t('greet')</p></template>`]]) {
+    const [action] = getInlineCodeActions(text, language, at(text, 'greet'), { en: { flat: { greet: value } } });
+    assert.doesNotMatch(action.edit.newText, /\r/, text);
+    // `whitespace: 'preserve'` isolates entity decoding from Vue's default text condensing.
+    const root = parseVue(apply(text, action.edit), { parseMode: language === 'vue' ? 'sfc' : 'html', whitespace: 'preserve' });
+    const find = (node) => node.type === 2 ? node : node.props?.find((p) => p.type === 6) || (node.children || []).map(find).find(Boolean);
+    const found = find(root);
+    assert.equal(found.type === 2 ? found.content : found.value.content, value, text);
+  }
+});
+
+test('inline treats legacy JavaScript MIME types as scripts and honours SFC attribute case', () => {
+  for (const type of ['text/x-javascript', 'application/x-javascript', 'text/javascript1.5', 'text/jscript', 'text/livescript']) {
+    const text = `<script type="${type}">window.label = t('greet');</script>`;
+    const [action] = getInlineCodeActions(text, 'html', at(text, 'greet'), locales);
+    assert.ok(action, type);
+    assert.equal(action.edit.newText, `'Say "hi" <now>'`);
+  }
+  // compiler-sfc ignores `LANG`, so this template is plain HTML.
+  const sfc = `<template LANG="pug"><p>{{ t('greet') }}</p></template>`;
+  assert.equal(getInlineCodeActions(sfc, 'vue', at(sfc, 'greet'), locales).length, 2);
 });
 
 test('inline Vue bound attribute keeps a string when the translation contains {', () => {
