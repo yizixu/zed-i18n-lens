@@ -420,26 +420,49 @@ test('inline judges Vue expressions after entity decoding', () => {
   }
 });
 
-test('inline HTML scripts follow their MIME type', () => {
+test('inline HTML scripts follow their MIME type, case-insensitively', () => {
   const value = '&apos; + secret + &apos;';
-  for (const body of [`{{ t('greet') }}`, `<p>{{ t('greet') }}</p>`]) {
-    const text = `<script type="text/x-template">${body}</script>`;
-    const [action] = getInlineCodeActions(text, 'html', at(text, 'greet'), { en: { flat: { greet: value } } });
-    assert.ok(action, body);
-    const template = /<script[^>]*>([\s\S]*)<\/script>/.exec(apply(text, action.edit))[1];
-    const textOf = (node) => (node.type === 2 ? node.content : (node.children || []).map(textOf).join(''));
-    assert.equal(textOf(parseVue(template, { parseMode: 'html' })), value, template);
+  for (const open of ['<script type="text/x-template">', '<script TYPE="Text/X-Template">', '<SCRIPT type="text/x-template">']) {
+    for (const body of [`{{ t('greet') }}`, `<p>{{ t('greet') }}</p>`]) {
+      const text = `${open}${body}</script>`;
+      const [action] = getInlineCodeActions(text, 'html', at(text, 'greet'), { en: { flat: { greet: value } } });
+      assert.ok(action, text);
+      const template = /<script[^>]*>([\s\S]*)<\/script>/i.exec(apply(text, action.edit))[1];
+      const textOf = (node) => (node.type === 2 ? node.content : (node.children || []).map(textOf).join(''));
+      assert.equal(textOf(parseVue(template, { parseMode: 'html' })), value, template);
+    }
   }
   const plain = `<script type="text/plain">t('greet')</script>`;
   assert.deepEqual(getInlineCodeActions(plain, 'html', at(plain, 'greet'), locales), []);
-  const module = `<script type="module">const label = t('greet')</script>`;
-  const [js] = getInlineCodeActions(module, 'html', at(module, 'greet'), locales);
-  assert.equal(apply(module, js.edit), `<script type="module">const label = 'Say "hi" <now>'</script>`);
+  for (const [open, close] of [['<script type="module">', '</script>'], ['<SCRIPT>', '</SCRIPT>'], ['<Script>', '</script>']]) {
+    const text = `${open}const label = t('greet')${close}`;
+    const [js] = getInlineCodeActions(text, 'html', at(text, 'greet'), locales);
+    assert.ok(js, open);
+    const body = apply(text, js.edit).slice(open.length, -close.length);
+    assert.equal(vm.runInNewContext(body + '\nlabel', {}, { timeout: 1000 }), 'Say "hi" <now>', open);
+  }
 });
 
-test('inline offers nothing inside CDATA sections', () => {
-  const text = `<template><svg><![CDATA[t('greet')]]></svg></template>`;
-  assert.deepEqual(getInlineCodeActions(text, 'vue', at(text, 'greet'), locales), []);
+test('inline JS strings inside interpolations carry no markup characters', () => {
+  // Browser Vue re-decodes an expression containing `&`, and in-DOM templates
+  // parse `<` as tags, so the inserted literal must avoid both.
+  const value = 'Say "hi" <b> & {{x}} \'q\'';
+  const text = `<script type="text/x-template"><p>{{ a<b ? t('greet') : '' }}</p></script>`;
+  const [action] = getInlineCodeActions(text, 'html', at(text, 'greet'), { en: { flat: { greet: value } } });
+  assert.doesNotMatch(action.edit.newText.slice(1, -1), /[&<>"{}]/);
+  assert.equal(vm.runInNewContext(action.edit.newText, {}, { timeout: 1000 }), value);
+  assert.equal(apply(text, action.edit), text.replace("t('greet')", () => action.edit.newText));
+});
+
+test('inline offers nothing inside CDATA sections only', () => {
+  for (const text of [`<template><svg><![CDATA[t('greet')]]></svg></template>`, `<template><svg>a<![CDATA[t('greet')]]>b</svg></template>`]) {
+    assert.deepEqual(getInlineCodeActions(text, 'vue', at(text, 'greet'), locales), [], text);
+  }
+  for (const text of [`<template><p title="<![CDATA[">t('greet')]]></p></template>`, `<template><svg><![CDATA[x]]>t('greet')</svg></template>`, `<template><!-- <![CDATA[ --><p>t('greet')</p></template>`]) {
+    const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), locales);
+    assert.ok(action, text);
+    assert.equal(apply(text, action.edit), text.replace("t('greet')", 'Say &quot;hi&quot; &lt;now&gt;'));
+  }
 });
 
 test('inline Vue bound attribute keeps a string when the translation contains {', () => {

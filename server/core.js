@@ -1029,9 +1029,26 @@ function decodedCall(raw, from, to, decode) {
   return code.slice(pos, pos + call.length) === call ? { code, start: pos, end: pos + call.length } : null;
 }
 
+// Attribute names are ASCII case-insensitive in HTML (`TYPE`, `Lang`).
 function staticAttr(element, name) {
-  const prop = element.props.find((p) => p.type === NodeTypes.ATTRIBUTE && p.name === name);
+  const prop = element.props.find((p) => p.type === NodeTypes.ATTRIBUTE && p.name.toLowerCase() === name);
   return prop?.value?.content;
+}
+
+// True when [start, end) lies in a CDATA section of this TEXT node's source.
+// Vue folds CDATA into the surrounding text node and its loc may start just
+// after the `<![CDATA[` marker.
+function inCdata(text, node, start, end) {
+  let from = node.loc.start.offset;
+  if (text.startsWith('<![CDATA[', from - 9)) from -= 9;
+  const to = node.loc.end.offset;
+  for (let i = text.indexOf('<![CDATA[', from); i >= 0 && i < to; i = text.indexOf('<![CDATA[', i)) {
+    const close = text.indexOf(']]>', i + 9);
+    const stop = close < 0 ? to : close + 3;
+    if (i < end && start < stop) return true;
+    i = stop;
+  }
+  return false;
 }
 
 function scriptDialect(lang) {
@@ -1070,7 +1087,10 @@ function templateInlineTarget(text, language, start, end) {
   let root;
   let invalid = false;
   try {
-    root = parseTemplate(text, {
+    // Browsers end script/style raw text case-insensitively (`<SCRIPT>`);
+    // Vue's parser only knows lowercase. Same-length rewrite keeps offsets.
+    const source = language === 'vue' ? text : text.replace(/<(\/?)(script|style)(?=[\s/>])/gi, (_, slash, tag) => `<${slash}${tag.toLowerCase()}`);
+    root = parseTemplate(source, {
       parseMode: language === 'vue' ? 'sfc' : 'html',
       comments: true,
       // Missing end tags and quotes inside unquoted values (browsers accept
@@ -1121,8 +1141,7 @@ function templateInlineTarget(text, language, start, end) {
     // SFC text outside <template> (custom blocks, stray root text) is not markup.
     if (language === 'vue' && !ancestors.some((el) => el.tag === 'template' && sfcBlocks.includes(el))) return null;
     // CDATA content is never entity-decoded; HTML escaping would change it.
-    const cdata = text.lastIndexOf('<![CDATA[', start);
-    if (cdata >= 0 && cdata >= (parent.loc?.start.offset ?? 0) && text.indexOf(']]>', cdata) >= end) return null;
+    if (inCdata(text, node, start, end)) return null;
     return { kind: 'text' };
   }
 }
@@ -1269,11 +1288,10 @@ function inlineEdit(text, target, start, end, quote, value) {
   if (target.kind === 'interpolation') {
     // Without braces the whole `{{ t('key') }}` becomes plain text.
     if (target.whole && !/[{}]/.test(value)) return replace(target.start, target.end, escapeHtml(value));
-    // Vue (and the browser for in-DOM templates) decodes entities inside
-    // `{{ }}`, so the JS literal is HTML-escaped to round-trip exactly. A `}}`
-    // in the string would end the interpolation; `\x7D` is the same `}`.
-    const literal = escapeHtml(escapeJsString(value, quote));
-    return replace(start, end, literal.includes('}}') ? literal.replace(/\}/g, '\\x7D') : literal);
+    // A JS literal with no markup-significant characters at all: entities
+    // would change whether browser Vue re-decodes the whole expression, `<`
+    // is parsed as a tag in in-DOM templates, and `}}` ends the interpolation.
+    return replace(start, end, markupFreeJsString(value, quote));
   }
   // Braces stay inside a bound JS string, not a plain attribute Vue could re-read.
   if (target.bound && /[{}]/.test(value)) {
@@ -1281,6 +1299,16 @@ function inlineEdit(text, target, start, end, quote, value) {
     return replace(target.start, target.end, `:${target.name}=${target.quote}${escapeHtmlAttribute(escapeJsString(value, jsQuote), target.quote)}${target.quote}`);
   }
   return replace(target.start, target.end, `${target.name}="${escapeHtml(value)}"`);
+}
+
+function markupFreeJsString(value, quote) {
+  const escaped = value.replace(/[\\\n\r\u2028\u2029&<>"'`${}]/g, (ch) => {
+    if (ch === '\\') return '\\\\';
+    if (ch === '\n') return '\\n';
+    if (ch === '\r') return '\\r';
+    return '\\u' + ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0');
+  });
+  return quote + escaped + quote;
 }
 
 function escapeHtml(value) {
