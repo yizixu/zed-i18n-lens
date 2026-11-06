@@ -1,5 +1,6 @@
 import { parseDocument, DomUtils } from 'htmlparser2';
-import { parse as parseScript } from '@babel/parser';
+import { parse as parseScript, parseExpression } from '@babel/parser';
+import { parse as parseTemplate, NodeTypes, ErrorCodes } from '@vue/compiler-dom';
 
 export const DEFAULT_CONFIG = Object.freeze({
   defaultLocale: 'zh-CN',
@@ -964,75 +965,20 @@ function scanElements(text, opaque = computeOpaqueRanges(text).ranges) {
   return elements;
 }
 
-// Whole `{{ … }}` expressions are opaque to the template tag scan: regexes or
-// comparisons such as `{{ /<script>/.test(x) }}` are code, not markup.
-function templateOpaqueRanges(text) {
-  const opaque = computeOpaqueRanges(text).ranges;
-  const ranges = [...opaque];
-  let i = 0;
-  while ((i = text.indexOf('{{', i)) >= 0) {
-    if (isOpaque(opaque, i)) { i += 2; continue; }
-    let close = i + 2;
-    while ((close = text.indexOf('}}', close)) >= 0 && isOpaque(opaque, close)) close += 2;
-    if (close < 0) break;
-    ranges.push({ start: i, end: close + 2 });
-    i = close + 2;
-  }
-  // isOpaque's binary search needs disjoint ranges.
-  ranges.sort((a, b) => a.start - b.start);
-  const merged = [];
-  for (const r of ranges) {
-    const last = merged[merged.length - 1];
-    if (last && r.start <= last.end) last.end = Math.max(last.end, r.end);
-    else merged.push({ ...r });
-  }
-  return merged;
-}
-
-/** Template-only (Vue/HTML) location of `offset`: 'openTag' | 'script' | 'text'. */
-function markupFrame(text, offset) {
-  const opaque = templateOpaqueRanges(text);
-  const el = scanElements(text, opaque)
-    .filter((e) => e.start <= offset && offset < e.end)
-    .sort((a, b) => (a.end - a.start) - (b.end - b.start))[0];
-  if (el) {
-    if (offset < el.openEnd) return 'openTag';
-    return el.tag === 'script' || el.tag === 'style' ? 'script' : 'text';
-  }
-  const before = text.slice(0, offset);
-  const lastLt = before.lastIndexOf('<');
-  const lastGt = before.lastIndexOf('>');
-  if (lastLt > lastGt && /^[A-Za-z]/.test(before.slice(lastLt + 1)) && !isOpaque(opaque, lastLt)) return 'openTag';
-  // Outside every element of an HTML/Vue document is top-level markup text.
-  return 'text';
-}
-
-const SOURCE_PARSER_PLUGINS = {
-  typescript: ['typescript'],
-  typescriptreact: ['typescript', 'jsx'],
-  javascript: ['jsx'],
+const SCRIPT_PARSE_OPTIONS = {
+  sourceType: 'unambiguous',
+  errorRecovery: true,
+  allowReturnOutsideFunction: true,
+  allowAwaitOutsideFunction: true,
+  allowImportExportEverywhere: true,
 };
 
-/**
- * True only when [start, end) is a real CallExpression in JS/TS/JSX/TSX
- * source. Lexing cannot tell generics, comparisons, JSX text and code apart;
- * a parse failure offers nothing rather than risking a broken edit.
- */
-function isSourceCallExpression(text, language, start, end) {
-  let ast;
-  try {
-    ast = parseScript(text, {
-      sourceType: 'unambiguous',
-      plugins: SOURCE_PARSER_PLUGINS[language] || SOURCE_PARSER_PLUGINS.javascript,
-      errorRecovery: true,
-      allowReturnOutsideFunction: true,
-      allowAwaitOutsideFunction: true,
-      allowImportExportEverywhere: true,
-    });
-  } catch {
-    return false;
-  }
-  let node = ast.program;
+function scriptPlugins(dialect) {
+  const syntax = dialect === 'typescript' ? ['typescript'] : dialect === 'typescriptreact' ? ['typescript', 'jsx'] : ['jsx'];
+  return [...syntax, 'decorators-legacy'];
+}
+
+function hasCallAt(node, start, end) {
   while (node) {
     if (node.type === 'CallExpression' && node.start === start && node.end === end) return true;
     let next = null;
@@ -1046,6 +992,112 @@ function isSourceCallExpression(text, language, start, end) {
     node = next;
   }
   return false;
+}
+
+// Lexing cannot tell generics, comparisons, regexes, JSX text and code apart;
+// only a parsed CallExpression qualifies. Parse failures offer nothing.
+function isCallInScript(code, dialect, start, end) {
+  try {
+    return hasCallAt(parseScript(code, { ...SCRIPT_PARSE_OPTIONS, plugins: scriptPlugins(dialect) }).program, start, end);
+  } catch {
+    return false;
+  }
+}
+
+function isCallInExpression(code, dialect, start, end) {
+  try {
+    return hasCallAt(parseExpression(code, { plugins: dialect === 'typescript' ? ['typescript'] : [], errorRecovery: true }), start, end);
+  } catch {
+    return false;
+  }
+}
+
+function staticAttr(element, name) {
+  const prop = element.props.find((p) => p.type === NodeTypes.ATTRIBUTE && p.name === name);
+  return prop?.value?.content;
+}
+
+function scriptDialect(lang) {
+  if (lang === 'ts') return 'typescript';
+  return lang === 'tsx' ? 'typescriptreact' : 'javascript';
+}
+
+function attributeTarget(text, prop, start, end, dialect) {
+  const callText = text.slice(start, end);
+  if (prop.type === NodeTypes.ATTRIBUTE) {
+    // Static attribute text such as title="$t('key')" is a look-alike, not a call.
+    if (!prop.value) return null;
+    const raw = text.slice(prop.value.loc.start.offset, prop.value.loc.end.offset).replace(/^(["'])([\s\S]*)\1$/, '$2');
+    if (raw.trim() !== callText) return null;
+    return { kind: 'attribute', name: prop.name, bound: false, quote: '"', start: prop.loc.start.offset, end: prop.loc.end.offset };
+  }
+  // Only a whole, unmodified `:name` / `v-bind:name` binding can become a plain attribute.
+  if (prop.name !== 'bind' || !prop.arg?.isStatic || prop.modifiers.length || !prop.exp) return null;
+  const expStart = prop.exp.loc.start.offset;
+  const raw = text.slice(expStart, prop.exp.loc.end.offset);
+  if (raw.trim() !== callText || !isCallInExpression(raw, dialect, start - expStart, end - expStart)) return null;
+  const quote = /["']/.test(text[expStart - 1]) ? text[expStart - 1] : '"';
+  return { kind: 'attribute', name: prop.arg.content, bound: true, quote, start: prop.loc.start.offset, end: prop.loc.end.offset };
+}
+
+const TOLERATED_TEMPLATE_ERRORS = new Set([ErrorCodes.X_MISSING_END_TAG, ErrorCodes.UNEXPECTED_CHARACTER_IN_UNQUOTED_ATTRIBUTE_VALUE]);
+
+/**
+ * Where a call sits in a Vue SFC or HTML document, from Vue's own template
+ * parser (it understands `{{ }}`, directives and raw-text blocks). Returns
+ * null whenever the context is not provably one of the rewritable kinds.
+ */
+function templateInlineTarget(text, language, start, end) {
+  let root;
+  let invalid = false;
+  try {
+    root = parseTemplate(text, {
+      parseMode: language === 'vue' ? 'sfc' : 'html',
+      comments: true,
+      // Missing end tags and quotes inside unquoted values (browsers accept
+      // both) keep node bounds intact; anything else, such as unclosed tags or
+      // interpolations while typing, leaves the context unknown.
+      onError: (error) => { if (!TOLERATED_TEMPLATE_ERRORS.has(error.code)) invalid = true; },
+      onWarn: () => {},
+    });
+  } catch {
+    return null;
+  }
+  if (invalid) return null;
+  const sfcBlocks = language === 'vue' ? root.children.filter((n) => n.type === NodeTypes.ELEMENT) : [];
+  const exprDialect = sfcBlocks.some((n) => n.tag === 'script' && /^tsx?$/.test(staticAttr(n, 'lang') || '')) ? 'typescript' : 'javascript';
+  const ancestors = [];
+  let parent = root;
+  for (;;) {
+    const node = parent.children?.find((n) => n.loc.start.offset <= start && end <= n.loc.end.offset);
+    if (!node) return null;
+    if (node.type === NodeTypes.ELEMENT) {
+      if (language === 'vue' && parent === root && node.tag === 'template' && (staticAttr(node, 'lang') || 'html') !== 'html') return null;
+      const prop = node.props.find((p) => p.loc.start.offset <= start && end <= p.loc.end.offset);
+      if (prop) return attributeTarget(text, prop, start, end, exprDialect);
+      ancestors.push(node);
+      parent = node;
+      continue;
+    }
+    if (node.type === NodeTypes.INTERPOLATION) {
+      const exp = node.content;
+      const expStart = exp.loc.start.offset;
+      const raw = text.slice(expStart, exp.loc.end.offset);
+      if (!isCallInExpression(raw, exprDialect, start - expStart, end - expStart)) return null;
+      return { kind: 'interpolation', whole: raw.trim() === text.slice(start, end), start: node.loc.start.offset, end: node.loc.end.offset };
+    }
+    if (node.type !== NodeTypes.TEXT) return null;
+    if (parent.type === NodeTypes.ELEMENT && parent.tag === 'script') {
+      const dialect = language === 'vue' ? scriptDialect(staticAttr(parent, 'lang')) : 'javascript';
+      const base = node.loc.start.offset;
+      const code = text.slice(base, node.loc.end.offset);
+      return isCallInScript(code, dialect, start - base, end - base) ? { kind: 'script' } : null;
+    }
+    if (parent.type === NodeTypes.ELEMENT && parent.tag === 'style') return null;
+    // SFC text outside <template> (custom blocks, stray root text) is not markup.
+    if (language === 'vue' && !ancestors.some((el) => el.tag === 'template' && sfcBlocks.includes(el))) return null;
+    return { kind: 'text' };
+  }
 }
 
 function commonKeyPrefix(keys) {
@@ -1171,52 +1223,35 @@ export function getInlineCodeActions(text, language, range, locales = {}) {
   const item = extractI18nKeys(text, { includeStaticAttrCalls: isTemplate }).find((c) => c.call && offset >= c.call.start && endOffset <= c.call.end);
   if (!item || item.call.argCount !== 1) return [];
   const { start, end, quote } = item.call;
-  if (!isTemplate && !isSourceCallExpression(text, language, start, end)) return [];
-  const before = text.slice(0, start);
-  const after = text.slice(end);
-  const frame = isTemplate ? markupFrame(text, start) : 'code';
-  // Assignment syntax alone is not evidence of an HTML attribute; only an
-  // opening tag can hold one. Script/code and markup text replace the call.
-  const attr = frame === 'openTag' && attributeLiteralContext(text, start, end);
-  if (frame === 'openTag' && !attr) {
-    const openAttr = /(?:^|[\s>])(?:(?::|v-bind:)?[\w-]+)\s*=\s*(["'])(?:(?!\1)[\s\S])*$/.exec(before);
-    if (openAttr && after.includes(openAttr[1])) return [];
-  }
-  const interp = frame === 'text' && /\{\{\s*$/.exec(before);
-  const interpEnd = frame === 'text' && /^\s*\}\}/.exec(after);
-  const htmlText = !attr && frame === 'text' && !/\{[^{]*$/.test(before);
+  const target = isTemplate
+    ? templateInlineTarget(text, language, start, end)
+    : isCallInScript(text, language, start, end) && { kind: 'script' };
+  if (!target) return [];
   return Object.entries(locales).flatMap(([name, locale]) => {
     const value = locale?.flat?.[item.key];
     if (typeof value !== 'string') return [];
-    let edit;
-    if (interp && interpEnd) {
-      // `{++counter}` or `{{ test }}` must stay a JS string inside the
-      // mustache; stripping `{{ }}` would let Vue re-parse the braces.
-      if (/[{}]/.test(value)) {
-        edit = { range: makeRange(text, start, end), newText: escapeJsString(value, quote) };
-      } else {
-        edit = { range: makeRange(text, start - interp[0].length, end + interpEnd[0].length), newText: escapeHtml(value) };
-      }
-    } else if (attr) {
-      const vueBound = text[attr.attrStart] === ':' || text.startsWith('v-bind:', attr.attrStart);
-      let boundLiteral;
-      if (attr.innerQuote || (vueBound && /[{}]/.test(value))) {
-        const jsQuote = attr.innerQuote || (attr.openQuote === '"' ? "'" : '"');
-        // The JS literal is nested in HTML: JS escapes alone cannot protect the
-        // outer attribute quote or preserve literal entity text such as &quot;.
-        const expression = escapeHtmlAttribute(escapeJsString(value, jsQuote), attr.openQuote);
-        boundLiteral = `:${attr.name}=${attr.openQuote}${expression}${attr.openQuote}`;
-      } else {
-        boundLiteral = `${attr.name}="${escapeHtml(value)}"`;
-      }
-      edit = { range: makeRange(text, attr.attrStart, attr.attrEnd), newText: boundLiteral };
-    } else if (htmlText) {
-      edit = { range: makeRange(text, start, end), newText: escapeHtml(value) };
-    } else {
-      edit = { range: makeRange(text, start, end), newText: escapeJsString(value, quote) };
-    }
-    return [{ title: `Inline i18n key "${item.key}" as ${name}`, edit }];
+    return [{ title: `Inline i18n key "${item.key}" as ${name}`, edit: inlineEdit(text, target, start, end, quote, value) }];
   });
+}
+
+function inlineEdit(text, target, start, end, quote, value) {
+  const replace = (from, to, newText) => ({ range: makeRange(text, from, to), newText });
+  if (target.kind === 'script') return replace(start, end, escapeJsString(value, quote));
+  // Template text: `{{`/`}}` in the translation must not become a Vue interpolation.
+  if (target.kind === 'text') return replace(start, end, escapeHtml(value).replace(/\{/g, '&#123;').replace(/\}/g, '&#125;'));
+  if (target.kind === 'interpolation') {
+    // Without braces the whole `{{ t('key') }}` becomes plain text.
+    if (target.whole && !/[{}]/.test(value)) return replace(target.start, target.end, escapeHtml(value));
+    // Vue (and the browser for in-DOM templates) decodes entities inside
+    // `{{ }}`, so the JS literal is HTML-escaped to round-trip exactly.
+    return replace(start, end, escapeHtml(escapeJsString(value, quote)));
+  }
+  // Braces stay inside a bound JS string, not a plain attribute Vue could re-read.
+  if (target.bound && /[{}]/.test(value)) {
+    const jsQuote = target.quote === '"' ? "'" : '"';
+    return replace(target.start, target.end, `:${target.name}=${target.quote}${escapeHtmlAttribute(escapeJsString(value, jsQuote), target.quote)}${target.quote}`);
+  }
+  return replace(target.start, target.end, `${target.name}="${escapeHtml(value)}"`);
 }
 
 function escapeHtml(value) {

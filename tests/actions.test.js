@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { parseDocument, DomUtils } from 'htmlparser2';
 import { TextDocument } from 'vscode-languageserver-textdocument';
+import { parse as parseVue } from '@vue/compiler-dom';
 import { getExtractCodeActions, getInlineCodeActions, getRawTextDiagnostics } from '../server/core.js';
 
 function apply(text, edit) {
@@ -183,6 +184,20 @@ test('JSX text and static attribute look-alikes are not inline targets', () => {
   }
 });
 
+test('decorators elsewhere in a TS file do not disable inline', () => {
+  const sources = [
+    "@sealed\nclass View { label() { return t('greet'); } }",
+    "class View { constructor(@inject foo: string) {} label() { return t('greet'); } }",
+  ];
+  for (const text of sources) {
+    for (const language of ['typescript', 'typescriptreact']) {
+      const [action] = getInlineCodeActions(text, language, at(text, 'greet'), locales);
+      assert.ok(action, `${language}: ${text}`);
+      assert.equal(apply(text, action.edit), text.replace("t('greet')", `'Say "hi" <now>'`));
+    }
+  }
+});
+
 test('inline JS assignments inside HTML and Vue scripts stay string literals', () => {
   const sources = [
     "<script>const label = t('greet')\n</script>",
@@ -238,6 +253,55 @@ test('inline Vue attributes after tag-like interpolation expressions stay attrib
     assert.ok(action, expression);
     assert.equal(apply(text, action.edit), `<template><p>{{ ${expression} }}</p><img alt="Say &quot;hi&quot; &lt;now&gt;" data-keep="same"></template>`);
   }
+});
+
+test('braces in Vue script, style and directive values do not hide later attributes', () => {
+  const sources = [
+    `<script>const open = /{{/;</script><template><img :alt="t('greet')" data-keep="same">{{ count }}</template>`,
+    `<style>a { background: url({{.png) }</style><template><img :alt="t('greet')" data-keep="same">{{ count }}</template>`,
+    `<template><button @click="() => {{ foo(); } }">x</button><img :alt="t('greet')" data-keep="same">{{ count }}</template>`,
+  ];
+  for (const text of sources) {
+    const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), locales);
+    assert.ok(action, text);
+    assert.equal(apply(text, action.edit), text.replace(`:alt="t('greet')"`, 'alt="Say &quot;hi&quot; &lt;now&gt;"'));
+  }
+});
+
+test('inline offers nothing while a tag or interpolation is still open', () => {
+  const sources = [
+    ['vue', `<template><img :alt="t('greet')"`],
+    ['html', `<div><img :alt="t('greet')"`],
+    ['vue', `<template><p>{{ /<script>/.test(x)</p><img :alt="t('greet')"></template>`],
+  ];
+  for (const [language, text] of sources) {
+    assert.deepEqual(getInlineCodeActions(text, language, at(text, 'greet'), locales), [], text);
+  }
+});
+
+test('inline inside a larger Vue interpolation round-trips entities and quotes', () => {
+  const value = 'A &amp; B "q" <now>';
+  const text = `<template><p>{{ t('greet') + suffix }}</p></template>`;
+  const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), { en: { flat: { greet: value } } });
+  const updated = apply(text, action.edit);
+  const interpolation = parseVue(updated, { parseMode: 'sfc' }).children[0].children[0].children[0];
+  assert.equal(vm.runInNewContext(interpolation.content.content, { suffix: '' }, { timeout: 1000 }), value, updated);
+});
+
+test('inline Vue text keeps interpolation delimiters in translations literal', () => {
+  const text = `<template><p>Hello t('greet')</p></template>`;
+  const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), { en: { flat: { greet: '{{ secret }}' } } });
+  const p = parseVue(apply(text, action.edit), { parseMode: 'sfc' }).children[0].children[0];
+  assert.deepEqual(p.children.map((node) => node.type), [2], 'single text node, no interpolation');
+  assert.equal(p.children[0].content, 'Hello {{ secret }}');
+});
+
+test('inline skips calls in style blocks and custom SFC blocks', () => {
+  const sources = [
+    `<template><p>x</p></template><style>.a::after { content: t('greet') }</style>`,
+    `<template><p>x</p></template><docs>Use t('greet') here</docs>`,
+  ];
+  for (const text of sources) assert.deepEqual(getInlineCodeActions(text, 'vue', at(text, 'greet'), locales), [], text);
 });
 
 test('inline HTML top-level text and interpolation outside any element', () => {

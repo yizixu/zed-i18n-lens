@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@babel/parser": "^7.29.13",
+    "@vue/compiler-dom": "^3.5.45",
     "htmlparser2": "^10.1.0",
     "vscode-languageserver": "^9.0.1",
     "vscode-languageserver-textdocument": "^1.0.12"
