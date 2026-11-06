@@ -469,6 +469,22 @@ test('inline leaves HTML bindings with uppercase directive names alone', () => {
   for (const text of [`<div V-BIND:TITLE="t('greet')"></div>`, `<div V-bind:title="t('greet')"></div>`]) {
     assert.deepEqual(getInlineCodeActions(text, 'html', at(text, 'greet'), locales), [], text);
   }
+  // Raw x-template contents are not lowercased by the browser: `V-TITLE` stays static.
+  const raw = `<script type="text/x-template"><div V-TITLE="t('greet')"></div></script>`;
+  const [action] = getInlineCodeActions(raw, 'html', at(raw, 'greet'), locales);
+  assert.equal(apply(raw, action.edit), `<script type="text/x-template"><div V-TITLE="Say &quot;hi&quot; &lt;now&gt;"></div></script>`);
+});
+
+test('inline keeps bindings whose attribute name looks like a directive', () => {
+  for (const attribute of [':v-bind:title', '::title', 'v-bind:v-bind:title']) {
+    const text = `<template><div ${attribute}="t('greet')"></div></template>`;
+    const [action] = getInlineCodeActions(text, 'vue', at(text, 'greet'), { en: { flat: { greet: 'Hello' } } });
+    const div = parseVue(apply(text, action.edit), { parseMode: 'sfc' }).children[0].children[0];
+    const [prop] = div.props;
+    assert.equal(prop.type, 7, attribute);
+    assert.equal(prop.arg.content, attribute.replace(/^(?::|v-bind:)/, ''), attribute);
+    assert.equal(vm.runInNewContext(prop.exp.content, {}, { timeout: 1000 }), 'Hello', attribute);
+  }
 });
 
 test('inline plain attributes and text keep carriage returns', () => {

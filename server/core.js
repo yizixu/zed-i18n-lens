@@ -1057,12 +1057,16 @@ function scriptDialect(lang) {
   return lang === 'tsx' ? 'typescriptreact' : 'javascript';
 }
 
-function attributeTarget(text, prop, start, end, dialect, html) {
+// Vue reads any attribute name starting with these as a directive.
+const DIRECTIVE_NAME = /^(?:v-|[:@#.])/i;
+
+function attributeTarget(text, prop, start, end, dialect, lowercaseNames) {
   const callText = text.slice(start, end);
   if (prop.type === NodeTypes.ATTRIBUTE) {
-    // Browsers lowercase attribute names, so `V-BIND:TITLE` is a binding
-    // there even though Vue's case-sensitive parser saw a static attribute.
-    if (html && /^(?:v-|[:@#.])/i.test(prop.name)) return null;
+    // Browsers lowercase attribute names before Vue sees an in-DOM template,
+    // so `V-BIND:TITLE` is a binding there even though Vue's case-sensitive
+    // parser saw a static attribute.
+    if (lowercaseNames && DIRECTIVE_NAME.test(prop.name)) return null;
     // Static attribute text such as title="$t('key')" is a look-alike, not a call.
     if (!prop.value) return null;
     const raw = text.slice(prop.value.loc.start.offset, prop.value.loc.end.offset).replace(/^(["'])([\s\S]*)\1$/, '$2');
@@ -1076,7 +1080,9 @@ function attributeTarget(text, prop, start, end, dialect, html) {
   const decoded = decodedCall(raw, start - expStart, end - expStart, decodeHTMLAttribute);
   if (!decoded || decoded.code.trim() !== callText || !isCallInExpression(decoded.code, dialect, decoded.start, decoded.end)) return null;
   const quote = /["']/.test(text[expStart - 1]) ? text[expStart - 1] : '"';
-  return { kind: 'attribute', name: prop.arg.content, bound: true, quote, start: prop.loc.start.offset, end: prop.loc.end.offset };
+  // `:v-bind:title` binds an attribute literally named `v-bind:title`; written
+  // as a plain attribute it would turn into a directive, so it stays bound.
+  return { kind: 'attribute', name: prop.arg.content, bound: true, keepBound: DIRECTIVE_NAME.test(prop.arg.content), quote, start: prop.loc.start.offset, end: prop.loc.end.offset };
 }
 
 const TOLERATED_TEMPLATE_ERRORS = new Set([ErrorCodes.X_MISSING_END_TAG, ErrorCodes.UNEXPECTED_CHARACTER_IN_UNQUOTED_ATTRIBUTE_VALUE]);
@@ -1093,7 +1099,7 @@ const JS_SCRIPT_TYPES = new Set([
  * parser (it understands `{{ }}`, directives and raw-text blocks). Returns
  * null whenever the context is not provably one of the rewritable kinds.
  */
-function templateInlineTarget(text, language, start, end) {
+function templateInlineTarget(text, language, start, end, lowercaseNames = language === 'html') {
   let root;
   let invalid = false;
   try {
@@ -1123,7 +1129,7 @@ function templateInlineTarget(text, language, start, end) {
     if (node.type === NodeTypes.ELEMENT) {
       if (language === 'vue' && parent === root && node.tag === 'template' && (staticAttr(node, 'lang') || 'html') !== 'html') return null;
       const prop = node.props.find((p) => p.loc.start.offset <= start && end <= p.loc.end.offset);
-      if (prop) return attributeTarget(text, prop, start, end, exprDialect, language === 'html');
+      if (prop) return attributeTarget(text, prop, start, end, exprDialect, lowercaseNames);
       ancestors.push(node);
       parent = node;
       continue;
@@ -1143,8 +1149,9 @@ function templateInlineTarget(text, language, start, end) {
       const type = (staticAttr(parent, 'type', true) || '').trim().toLowerCase();
       if (JS_SCRIPT_TYPES.has(type)) return isCallInScript(code, 'javascript', start - base, end - base) ? { kind: 'script' } : null;
       if (type !== 'text/x-template') return null;
-      // An in-DOM Vue template: its raw contents are compiled as a template.
-      const inner = templateInlineTarget(code, 'html', start - base, end - base);
+      // An in-DOM Vue template: its raw contents are compiled as a template,
+      // without the browser lowercasing attribute names first.
+      const inner = templateInlineTarget(code, 'html', start - base, end - base, false);
       return inner && ('start' in inner ? { ...inner, start: inner.start + base, end: inner.end + base } : inner);
     }
     if (parent.type === NodeTypes.ELEMENT && parent.tag === 'style') return null;
@@ -1305,7 +1312,7 @@ function inlineEdit(text, target, start, end, quote, value) {
     return replace(start, end, markupFreeJsString(value, quote));
   }
   // Braces stay inside a bound JS string, not a plain attribute Vue could re-read.
-  if (target.bound && /[{}]/.test(value)) {
+  if (target.bound && (target.keepBound || /[{}]/.test(value))) {
     const jsQuote = target.quote === '"' ? "'" : '"';
     return replace(target.start, target.end, `:${target.name}=${target.quote}${escapeHtmlAttribute(escapeJsString(value, jsQuote), target.quote)}${target.quote}`);
   }
