@@ -10,6 +10,7 @@ Zed extension plus Language Server for Vue, TypeScript, TSX, JavaScript and JSX.
 - Diagnostics: report missing keys, missing locale entries, mismatched interpolation params, and (on locale files) keys whose params differ across languages
 - Optional raw-text diagnostics: flag likely untranslated Vue/HTML template text and selected user-facing attributes
 - Quick fixes: add missing / remove unused interpolation params, and create missing keys in unambiguous JSON locale targets using versioned edits
+- Extract / Inline code actions: explicitly extract Vue/HTML template text into a new locale key, or replace a supported translation call with one locale's stored text
 - Completion: suggest existing i18n keys with default locale text only inside supported i18n key positions
 - Definition: jump from a source key to its locale definition; when several locales define the key, pick which language file to open
 - References: from a locale definition or source usage, find references within the same project/package context, including open source files not yet saved to disk
@@ -106,9 +107,10 @@ The natural-language heuristics are inspired by i18n Ally's raw-string detection
 
 Comments, `script`/`style`, Vue custom blocks, interpolations (`{{ ... }}`), translation-component subtrees (`i18n-t`/`I18nT`, legacy `i18n`, `Trans`) and `v-t` elements are excluded. `code`/`pre`, `v-pre`, `v-html`, `v-text` and `translate="no"` subtrees are also skipped; use `translate="no"` to mark intentionally untranslated content. Vue templates using `src` or a non-HTML `lang` (such as Pug) are not inspected.
 
-There is no Babel/JavaScript/TypeScript/JSX string analysis, workspace-wide scan, automatic extraction or raw-text quick fix. Only open Vue/HTML buffers receive these warnings. The parser is tolerant of incomplete markup, not a full Vue compiler; complex or malformed templates can be missed. Existing key/parameter diagnostics and quick fixes are unchanged.
+Raw-text diagnostics do not analyze JavaScript/TypeScript/JSX strings, scan the whole workspace, or extract text automatically. Only open Vue/HTML buffers receive these warnings. Explicit Extract actions are available separately from the editor's code-action menu, even when these warnings are disabled (see below). The parser is tolerant of incomplete markup, not a full Vue compiler; complex or malformed templates can be missed. Existing key/parameter diagnostics and quick fixes are unchanged.
 
 For local development, HTML registration in `extension.toml` requires reinstalling the dev extension in Zed, then running `scripts/deploy-local.ps1` again and restarting the language server. Updating only the server does not register HTML buffers.
+
 ## Creating missing keys safely
 
 The missing-key quick fix supports a single JSON file per locale and directory layouts such as `locales/en/common.json`. For `t('common.submit')`, it inserts `submit` into `common.json`, without duplicating the `common.` prefix. `index.json` has no file-stem prefix.
@@ -120,6 +122,53 @@ The missing-key quick fix supports a single JSON file per locale and directory l
 - Quick fixes require LSP `workspace.workspaceEdit.documentChanges` support. Creating a file additionally requires the `create` resource operation. Existing-file edits use the open document version, or `null` for closed files; the server cannot version-check external changes to closed files.
 
 Recognition skips calls inside comments and ordinary strings, and does not treat a concatenated key such as `t('prefix.' + name)` as a static key. Vue directive expressions, JSX expressions, and calls inside template-literal interpolations remain supported. Recognition is lexical, not full framework binding or scope analysis.
+
+## Extract and Inline code actions
+
+These actions **rewrite source code**; they are separate from the read-only inline translation hints above. Open the editor's code-action menu at the text or call you want to change and review the proposed edits before applying them. Both actions require client support for `workspace.workspaceEdit.documentChanges`.
+
+### Extract template text
+
+In a Vue HTML `<template>` or an HTML document, place the caret in a supported static text fragment, or select a range that fully contains it, and choose **Extract to i18n key "…"**. A selection can offer separate actions for several fragments; it does not extract arbitrary substrings or apply a batch conversion. `rawTextDiagnostics` can remain disabled.
+
+For example, in `Home.vue` with no existing source keys:
+
+```html
+<!-- Before -->
+<button>Save changes</button>
+<!-- After -->
+<button>{{ $t('Home.save_changes') }}</button>
+```
+
+Extract also adds `"Home": { "save_changes": "Save changes" }` to the selected locale's JSON, preserving unrelated entries. It writes **only one locale**: the current project/package's `defaultLocale`, including locale-name normalization and language aliases, or the first loaded locale if none matches. No loaded locales means no Extract action. It does not create a missing default language or populate every translation.
+
+- Supported attributes are `title`, `alt`, `placeholder`, `label`, and `aria-label`, including whole, simple quoted literals in bound attributes. Static attributes become bindings such as `:title="$t('Home.save_changes')"`. HTML files receive the same **Vue-style syntax**; this is not a framework-neutral HTML rewrite.
+- Key prefixes come from nearby existing template keys, then a file-wide common parent prefix, then the filename stem. The suffix uses a short ASCII text slug or a deterministic hash for text without ASCII words. Every extraction allocates a new key rather than reusing identical text; conflicts in the selected locale can change the prefix or add a numeric suffix.
+- Extract shares the template exclusions described under raw-text diagnostics. It does not extract ordinary JS/TS/JSX strings, evaluate dynamic expressions, or turn interpolated text into parameterized messages. Fragments containing entities or `&`, `<`, `>`, `{`, or `}` are skipped, and repeated whitespace in the stored value is collapsed to a single space.
+- Locale edits follow the JSON target rules in **Creating missing keys safely** above. Invalid JSON, duplicate properties, ambiguous layouts, conflicting paths, or TS/JS targets suppress the action. New namespace files additionally require client support for `create`, an established sibling-locale JSON layout, and an existing parent directory; Extract does not create directories.
+
+### Inline a translation call
+
+Place the caret or a selection inside a static-key call such as `t('Home.save_changes')` and choose an **Inline** action for the desired locale. One action is offered per loaded locale that defines the key. It changes only the source and leaves the locale entry intact.
+
+Inline supports `t`, `$t`, `tc`, `$tc`, `i18n.t`, and `i18n.tc` calls with **only the key argument**, in Vue/HTML templates and JS/TS/JSX/TSX source. Passing any additional argument, even `{}`, suppresses the action. Other recognized forms such as `formatMessage`, `v-t`, or translation components are not supported by Inline.
+
+Calls are located with real parsers: Vue's template compiler (`@vue/compiler-dom`) for `.vue` and HTML documents, and Babel for JS/TS/JSX/TSX source and `<script>` blocks. Only a genuine call expression is rewritten:
+
+- **JS/TS/JSX/TSX and `<script>`**: the call becomes a JS string literal; JSX children and attributes keep braces, e.g. `title={'Save'}`. Look-alike text such as `<p>t('key')</p>` in JSX is not a call and is left alone.
+- **Template text**: the call becomes HTML-escaped text; a whole `{{ t('key') }}` becomes plain text unless the translation contains braces, in which case a JS string stays inside the interpolation.
+- **Attributes**: a whole `:title="t('key')"` / `v-bind:title` binding becomes `title="…"`; a static `title="$t('key')"` keeps its attribute.
+- HTML `<script type="text/x-template">` contents are handled as a template; other non-JavaScript script types are skipped.
+
+When the context cannot be proven safe, no action is offered: partial expressions such as `:title="t('key') + suffix"`, bindings with modifiers or dynamic arguments, other directives, unclosed tags or interpolations while typing, CDATA, `<style>` and custom SFC blocks, and `<template lang="pug">` or similar.
+
+Inline is intended to insert the locale's **stored text**, not a resolved runtime message: `{name}`, plural forms, and linked messages are not evaluated. A call without extra arguments can still rely on runtime behavior, so check that replacing it with literal text is appropriate. Vue's own whitespace condensing still applies to text produced from a whole interpolation.
+
+### Editing and failure boundaries
+
+Extract returns the source and locale changes in one LSP `WorkspaceEdit`; the editor applies them. Open buffers use their unsaved text and document version. Closed files have no version check against external changes. **Atomic application and rollback after permission or other client-side failures are not guaranteed or fully tested**; inspect both files if an edit fails. Failure while generating Extract or Inline actions is logged without discarding unrelated quick fixes.
+
+Rename is not included in this release; it remains tracked in [issue #2](https://github.com/yizixu/zed-i18n-lens/issues/2).
 
 ## Project configuration
 
@@ -190,7 +239,7 @@ Supported options:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `defaultLocale` | string | `zh-CN` | Locale used for completion details and inline translation hints. Supports exact names such as `en-US`, case-insensitive matching, `_`/`-` normalization, and language aliases such as `en` matching `en-US`. |
+| `defaultLocale` | string | `zh-CN` | Preferred locale for Extract, completion details, and inline translation hints. Supports exact names such as `en-US`, case-insensitive matching, `_`/`-` normalization, and language aliases such as `en` matching `en-US`. |
 | `localeDirs` | string[] | `src/locales`, `src/i18n`, `locales`, `i18n` | Workspace-relative directories to scan for locale files. In package configs, paths are relative to that package root. |
 | `inlayHints.enabled` | boolean | `true` | Enables or disables inline translation hints from this language server. Hover, completion, definition, diagnostics, and quick fixes can still work when inline hints are disabled. |
 | `inlayHints.maxLength` | number | `24` | Maximum inline hint label length before truncation. Hover still shows the full text. |

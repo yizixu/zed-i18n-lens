@@ -10,7 +10,7 @@
 
 ## 当前状态
 
-当前已具备（截至 v0.14.0）：
+当前代码已具备（v0.15.0 发布准备中，尚未发布到 npm）：
 
 - Zed Dev Extension 可加载，已通过 npm 发布 `i18n-lens-language-server`
 - Language Server 可通过 `--stdio` 启动
@@ -28,10 +28,11 @@
   - Completion 补全已有 i18n key
   - Definition 跳转到 locale 定义，多语言时返回每个语言的位置
   - Code Action：增删 interpolation params；在单文件及目录式 JSON locale 中安全创建缺失 key，支持多层目录布局与目标文件创建
+  - Extract / Inline：显式提取 Vue/HTML 模板原文到首选语言 JSON；把无参数翻译调用替换为所选语言的原文
   - References：从源码或 JSON/TS locale 定义查引用，隔离独立子包并包含尚未落盘的打开源码
   - 编辑安全：读取未保存 locale，版本化最小编辑，拒绝歧义 JSON 路径及目录路由
 - 项目配置 `.zed/i18nlensrc.json`（`defaultLocale` / `localeDirs` / `inlayHints` / `rawTextDiagnostics` / `packages`），支持 monorepo `packages` 多上下文
-- 自动化验证：`npm test`（纯函数 + 真实 stdio LSP 回归，135 项）
+- 自动化验证：`npm test`（纯函数 + 真实 stdio LSP 回归，202 项）
 - Zed extension 编译验证：`cargo check --target wasm32-wasip1`
 
 ---
@@ -39,6 +40,15 @@
 ## 已完成
 
 按版本倒序，只列结果，细节见 `CHANGELOG.md`。
+
+### v0.15.0（待发布）: Extract / Inline
+
+- Extract / Inline 已通过 PR #4 合入，Rename 继续由 issue #2 单独跟踪
+- 提取仅在 Vue/HTML 光标或选区显式触发，不依赖 raw-text 诊断，也不改变其保守规则
+- 提取创建新 key、避开父级叶子及重名冲突
+- 内联用 Vue 模板编译器与 Babel 定位真实调用（PR #7），处理属性、插值、实体、花括号、JSX 和 HTML script；上下文无法确认时不提供操作
+- Extract / Inline 异常单独捕获，不丢弃已有快速修复；覆盖未保存 locale、坏 JSON 和后续服务请求
+- README 补充使用方式及边界：Inline 只替换原文、不执行运行时解析；多文件编辑失败回滚仍待验证
 
 ### v0.14.0: 多层语言目录
 
@@ -129,18 +139,13 @@ node server/report.js --root . --format markdown
 
 **边界:** 必须显式报告扫描范围与上限（当前源码扫描约 5,000 文件），不能自动删除可能被动态引用的 key。
 
-### Task 3: Extract / Inline code action
+### Task 3: 编辑失败与 Inline 边界验证
 
-**Status:** 方向已确认（issue #2），等待贡献者 PR。
+**Status:** Extract / Inline 已合入 PR #4，以下验证后续单独推进，不阻塞本次发布准备。
 
-**Objective:** 把模板中的纯文本提取为 key 并写入默认 locale；把 `t('key')` 内联为指定语言的文本。
-
-**约束:**
-
-- raw-text 诊断保持现有保守规则，extract 只在光标/选区显式触发
-- key 前缀优先参考附近已有 key，其次文件内公共前缀，最后文件名
-- 无法安全转换（首尾空白属性、复杂表达式、含引号翻译）时不提供操作，而不是生成错误代码
-- 拆成独立 PR，先 extract / inline，Rename 单独评审
+- 补充多文件 workspace edit 在权限失败等情况下的客户端行为与回滚验证，不能仅凭服务端返回了完整 edit 就保证原子性
+- Inline 当前只插入 locale 原文，不执行插值、复数、关联消息或其他运行时解析；有额外参数的调用不提供操作，但无参数不等于译文不依赖运行时，用户仍需检查结果
+- 常量折叠等语义扩展另行设计，不纳入当前 Inline 的承诺
 
 ### Task 4: 框架与写法扩展
 
@@ -167,7 +172,10 @@ node server/report.js --root . --format markdown
 ## 已知边界
 
 - TS/JS locale module 的 key 定位是 line-based best-effort，不是完整语法树
-- 写入类 Code Action 只支持 JSON locale；TS/JS module 与 JSONC 仍只读
+- locale 写入类 Code Action 只支持 JSON locale；TS/JS module 与 JSONC 仍不支持写入
+- Extract 同时编辑源码和首选语言文件；权限失败等情况下的多文件回滚未验证，不保证客户端原子应用
+- Inline 只替换 locale 原文，不执行插值、复数或关联消息的运行时解析
+- Inline 对带修饰符或动态参数的绑定、部分表达式、未闭合标签/插值、CDATA、style 与自定义块不提供操作
 - TS/JS module 只能安全重命名最后一段 key
 - locale 加载器不执行用户代码，复杂表达式会被忽略而不是求值
 - 源码扫描有文件数上限（约 5,000），大仓库结果不是完整性保证
