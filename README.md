@@ -153,7 +153,9 @@ Place the caret or a selection inside a static-key call such as `t('Home.save_ch
 
 Inline supports `t`, `$t`, `tc`, `$tc`, `i18n.t`, and `i18n.tc` calls with **only the key argument**, in Vue/HTML templates and JS/TS/JSX/TSX source. Passing any additional argument, even `{}`, suppresses the action. Other recognized forms such as `formatMessage`, `v-t`, or translation components are not supported by Inline. Partial quoted attribute expressions such as `:title="t('key') + suffix"` are skipped.
 
-Inline handles HTML and JS quoting according to context, retaining a string expression where needed for braces in Vue/JSX text. It inserts the locale's **stored text**, not a resolved runtime message: `{name}`, plural forms, and linked messages are not evaluated. A call without extra arguments can still rely on runtime behavior, so check that replacing it with literal text is appropriate. Recognition is lexical, not full AST, scope, or framework analysis.
+Inline uses context-dependent HTML/JS string escaping, retaining a string expression where needed for braces in Vue/JSX text. It is intended to insert the locale's **stored text**, not a resolved runtime message: `{name}`, plural forms, and linked messages are not evaluated. A call without extra arguments can still rely on runtime behavior, so check that replacing it with literal text is appropriate. Recognition is lexical, not full AST, scope, or framework analysis.
+
+**Known bug — release blocker:** A plain JS/TS assignment without a semicolon, such as `const label = t('greet')`, can be misclassified as an HTML attribute. Inline can then double-escape entity text (`A &amp; B` becomes `A &amp;amp; B`) or insert an unescaped newline into a quoted string, producing invalid code. Avoid Inline in JS/TS assignment statements until this context-detection bug is fixed; this is not merely a runtime-message limitation.
 
 ### Editing and failure boundaries
 
